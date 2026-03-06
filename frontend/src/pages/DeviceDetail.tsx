@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
-  ArrowLeft, Cpu, MemoryStick, Globe, HardDrive, Package, Key, Save, RefreshCw
+  ArrowLeft, Cpu, Globe, HardDrive, Package, Key, Save, RefreshCw, Trash2, Activity
 } from "lucide-react";
 import {
   devices, customers, groups,
@@ -14,6 +14,9 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
+} from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 
 function StatusDot({ online }: { online: boolean }) {
@@ -49,6 +52,8 @@ export function DeviceDetail() {
   const [licenseLoading, setLicenseLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [softwareSearch, setSoftwareSearch] = useState("");
+  const [deleteDialog, setDeleteDialog] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   // Edit state
   const [description, setDescription] = useState("");
@@ -72,8 +77,6 @@ export function DeviceDetail() {
       setSelectedGroup(d.group?.id ?? "none");
       setLoading(false);
     });
-
-    // Try fetching existing license
     devices.getLicense(id).then(setLicense).catch(() => {});
   }, [id]);
 
@@ -89,12 +92,18 @@ export function DeviceDetail() {
     setDevice(updated);
   };
 
+  const handleDelete = async () => {
+    if (!id) return;
+    setDeleting(true);
+    await devices.delete(id).catch(() => {});
+    navigate("/devices");
+  };
+
   const handleRequestLicense = async () => {
     if (!id) return;
     setLicenseLoading(true);
     await devices.requestLicense(id).catch(() => {});
     setLicenseLoading(false);
-    // Refresh device to show licenseRequested = true
     const updated = await devices.get(id);
     setDevice(updated);
   };
@@ -102,10 +111,7 @@ export function DeviceDetail() {
   const handleFetchLicense = async () => {
     if (!id) return;
     setLicenseLoading(true);
-    try {
-      const lic = await devices.getLicense(id);
-      setLicense(lic);
-    } catch {}
+    try { setLicense(await devices.getLicense(id)); } catch {}
     setLicenseLoading(false);
   };
 
@@ -141,6 +147,15 @@ export function DeviceDetail() {
             <p className="text-sm text-muted-foreground mt-0.5">{device.description}</p>
           )}
         </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="text-muted-foreground hover:text-destructive"
+          onClick={() => setDeleteDialog(true)}
+        >
+          <Trash2 className="h-4 w-4 mr-1.5" />
+          Löschen
+        </Button>
       </div>
 
       {/* Edit fields */}
@@ -204,6 +219,7 @@ export function DeviceDetail() {
           <TabsTrigger value="disks"><HardDrive className="h-3.5 w-3.5 mr-1.5" />Festplatten</TabsTrigger>
           <TabsTrigger value="software"><Package className="h-3.5 w-3.5 mr-1.5" />Software ({software.length})</TabsTrigger>
           <TabsTrigger value="licenses"><Key className="h-3.5 w-3.5 mr-1.5" />Lizenzen</TabsTrigger>
+          <TabsTrigger value="history"><Activity className="h-3.5 w-3.5 mr-1.5" />Verlauf</TabsTrigger>
         </TabsList>
 
         {/* Hardware */}
@@ -401,6 +417,90 @@ export function DeviceDetail() {
           </Card>
         </TabsContent>
       </Tabs>
+
+        {/* History */}
+        <TabsContent value="history">
+          <Card>
+            <CardContent className="pt-6">
+              {device.recentCheckins.length === 0 ? (
+                <p className="text-sm text-muted-foreground">Noch keine Check-in-Daten vorhanden.</p>
+              ) : (
+                <div className="space-y-4">
+                  {/* RAM sparkline */}
+                  <div>
+                    <p className="text-xs text-muted-foreground mb-2">RAM-Auslastung (letzte Check-ins)</p>
+                    <div className="flex items-end gap-0.5 h-16">
+                      {[...device.recentCheckins].reverse().map((c, i) => {
+                        const pct = device.ramTotalGB > 0 ? (c.ramUsedGB / device.ramTotalGB) * 100 : 0;
+                        return (
+                          <div
+                            key={i}
+                            title={`${c.ramUsedGB.toFixed(1)} / ${device.ramTotalGB} GB — ${new Date(c.checkedInAt).toLocaleString("de-DE")}`}
+                            className={cn(
+                              "flex-1 min-w-[4px] rounded-sm transition-all",
+                              pct > 90 ? "bg-destructive" : pct > 70 ? "bg-amber-500" : "bg-primary"
+                            )}
+                            style={{ height: `${Math.max(4, pct)}%` }}
+                          />
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Table */}
+                  <div className="rounded-md border border-border overflow-hidden max-h-72 overflow-y-auto">
+                    <table className="w-full text-sm">
+                      <thead className="sticky top-0 bg-muted/50">
+                        <tr>
+                          <th className="text-left px-3 py-2 font-medium text-muted-foreground">Zeitpunkt</th>
+                          <th className="text-left px-3 py-2 font-medium text-muted-foreground">RAM belegt</th>
+                          <th className="text-left px-3 py-2 font-medium text-muted-foreground">Festplatten</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {device.recentCheckins.map((c, i) => {
+                          const disks: Array<{ drive: string; freeGB: number; totalGB: number }> = JSON.parse(c.diskDrivesJson || "[]");
+                          return (
+                            <tr key={i} className="border-t border-border/50">
+                              <td className="px-3 py-2 text-xs text-muted-foreground">
+                                {new Date(c.checkedInAt).toLocaleString("de-DE")}
+                              </td>
+                              <td className="px-3 py-2">
+                                {c.ramUsedGB.toFixed(1)} / {device.ramTotalGB} GB
+                              </td>
+                              <td className="px-3 py-2 text-xs text-muted-foreground">
+                                {disks.map(d => `${d.drive} ${(d.totalGB - d.freeGB).toFixed(0)}/${d.totalGB.toFixed(0)}GB`).join(" · ")}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+      {/* Delete confirmation dialog */}
+      <Dialog open={deleteDialog} onOpenChange={setDeleteDialog}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Gerät löschen</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Soll <strong className="text-foreground">{device.hostname}</strong> wirklich gelöscht werden?
+            Alle zugehörigen Daten (Check-ins, Software, Lizenzen) werden unwiderruflich entfernt.
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteDialog(false)}>Abbrechen</Button>
+            <Button variant="destructive" onClick={handleDelete} disabled={deleting}>
+              {deleting ? "Wird gelöscht..." : "Löschen"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

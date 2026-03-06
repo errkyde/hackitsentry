@@ -1,19 +1,31 @@
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import { Monitor, Clock, Users, Layers, LogOut, Shield } from "lucide-react";
+import { Monitor, Clock, Users, Layers, LogOut, Shield, Settings } from "lucide-react";
 import { devices } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Toaster } from "@/components/Toaster";
+import { toast } from "@/lib/useToast";
 
 export function Layout() {
   const navigate = useNavigate();
   const [pendingCount, setPendingCount] = useState(0);
 
   useEffect(() => {
+    let lastCount: number | null = null;
     const fetchCount = async () => {
       try {
         const data = await devices.getPendingCount();
+        if (lastCount !== null && data.count > lastCount) {
+          const diff = data.count - lastCount;
+          toast({
+            title: `${diff} neue${diff > 1 ? " Geräte" : "s Gerät"} wartet auf Freigabe`,
+            description: "Unter 'Ausstehend' findest du die Anfragen.",
+            variant: "warning",
+          });
+        }
+        lastCount = data.count;
         setPendingCount(data.count);
       } catch {}
     };
@@ -24,6 +36,7 @@ export function Layout() {
 
   const handleLogout = () => {
     localStorage.removeItem("token");
+    localStorage.removeItem("username");
     navigate("/login");
   };
 
@@ -37,6 +50,7 @@ export function Layout() {
     },
     { to: "/groups", icon: Layers, label: "Gruppen" },
     { to: "/customers", icon: Users, label: "Kunden" },
+    { to: "/settings", icon: Settings, label: "Einstellungen" },
   ];
 
   return (
@@ -100,6 +114,7 @@ export function Layout() {
       <main className="flex-1 overflow-auto">
         <Outlet />
       </main>
+      <Toaster />
     </div>
   );
 }

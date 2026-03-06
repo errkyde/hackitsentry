@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { Search, Wifi, WifiOff, ChevronRight, RefreshCw } from "lucide-react";
+import { Search, ChevronRight, RefreshCw, Monitor, Wifi, WifiOff, Clock, Download } from "lucide-react";
 import { devices, customers, groups, type Device, type Customer, type Group } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -30,6 +30,7 @@ export function Devices() {
   const [customerList, setCustomerList] = useState<Customer[]>([]);
   const [groupList, setGroupList] = useState<Group[]>([]);
   const [loading, setLoading] = useState(true);
+  const [stats, setStats] = useState({ total: 0, online: 0, offline: 0, pending: 0 });
 
   // Filters
   const [search, setSearch] = useState("");
@@ -49,14 +50,39 @@ export function Devices() {
   }, [search, groupFilter, customerFilter, statusFilter]);
 
   useEffect(() => {
-    Promise.all([customers.list(), groups.list()])
-      .then(([c, g]) => { setCustomerList(c); setGroupList(g); });
+    Promise.all([customers.list(), groups.list(), devices.getStats()])
+      .then(([c, g, s]) => { setCustomerList(c); setGroupList(g); setStats(s); });
   }, []);
 
   useEffect(() => {
     setLoading(true);
     fetchDevices().finally(() => setLoading(false));
   }, [fetchDevices]);
+
+  const exportCsv = () => {
+    const headers = ["Hostname", "Beschreibung", "Status", "Windows", "CPU", "RAM (GB)", "Kunde", "Gruppe", "Letzter Check-in"];
+    const rows = deviceList.map(d => [
+      d.hostname,
+      d.description,
+      d.isOnline ? "Online" : "Offline",
+      d.windowsVersion,
+      d.cpuModel,
+      d.ramTotalGB,
+      d.customer?.name ?? "",
+      d.group?.name ?? "",
+      d.lastSeenAt ? new Date(d.lastSeenAt).toLocaleString("de-DE") : "",
+    ]);
+    const csv = [headers, ...rows]
+      .map(row => row.map(v => `"${String(v).replace(/"/g, '""')}"`).join(";"))
+      .join("\n");
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `sentry-geraete-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   const formatLastSeen = (lastSeenAt: string | null) => {
     if (!lastSeenAt) return "Nie";
@@ -79,10 +105,34 @@ export function Devices() {
             {deviceList.length} Gerät{deviceList.length !== 1 ? "e" : ""} gefunden
           </p>
         </div>
-        <Button variant="outline" size="sm" onClick={() => fetchDevices()}>
-          <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
-          Aktualisieren
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={exportCsv} disabled={deviceList.length === 0}>
+            <Download className="h-3.5 w-3.5 mr-1.5" />
+            CSV
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => fetchDevices()}>
+            <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
+            Aktualisieren
+          </Button>
+        </div>
+      </div>
+
+      {/* Stats cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {[
+          { label: "Geräte gesamt", value: stats.total, icon: Monitor, color: "text-foreground" },
+          { label: "Online", value: stats.online, icon: Wifi, color: "text-emerald-400" },
+          { label: "Offline", value: stats.offline, icon: WifiOff, color: "text-rose-400" },
+          { label: "Ausstehend", value: stats.pending, icon: Clock, color: "text-amber-400" },
+        ].map(({ label, value, icon: Icon, color }) => (
+          <div key={label} className="rounded-lg border border-border bg-card px-4 py-3 flex items-center gap-3">
+            <Icon className={`h-5 w-5 flex-shrink-0 ${color}`} />
+            <div>
+              <div className="text-2xl font-semibold leading-none">{value}</div>
+              <div className="text-xs text-muted-foreground mt-1">{label}</div>
+            </div>
+          </div>
+        ))}
       </div>
 
       {/* Filter bar */}

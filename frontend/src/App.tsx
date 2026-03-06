@@ -6,6 +6,7 @@ import { DeviceDetail } from "@/pages/DeviceDetail";
 import { Pending } from "@/pages/Pending";
 import { Groups } from "@/pages/Groups";
 import { Customers } from "@/pages/Customers";
+import { Settings } from "@/pages/Settings";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const token = localStorage.getItem("token");
@@ -32,6 +33,7 @@ export default function App() {
           <Route path="pending" element={<Pending />} />
           <Route path="groups" element={<Groups />} />
           <Route path="customers" element={<Customers />} />
+          <Route path="settings" element={<Settings />} />
         </Route>
         <Route path="*" element={<Navigate to="/devices" replace />} />
       </Routes>

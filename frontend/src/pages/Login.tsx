@@ -21,6 +21,7 @@ export function Login() {
     try {
       const data = await auth.login(username, password);
       localStorage.setItem("token", data.token);
+      localStorage.setItem("username", data.username);
       navigate("/devices");
     } catch (err: any) {
       setError(err.message || "Login fehlgeschlagen");

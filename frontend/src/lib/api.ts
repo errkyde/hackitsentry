@@ -32,12 +32,33 @@ async function request<T>(
   return res.json();
 }
 
+// Users
+export const users = {
+  list: () => request<AppUser[]>("/api/users"),
+  create: (data: { username: string; password: string }) =>
+    request<AppUser>("/api/users", { method: "POST", body: JSON.stringify(data) }),
+  resetPassword: (id: string, newPassword: string) =>
+    request(`/api/users/${id}/reset-password`, { method: "POST", body: JSON.stringify({ newPassword }) }),
+  delete: (id: string) =>
+    request(`/api/users/${id}`, { method: "DELETE" }),
+};
+
+// Settings
+export const settings = {
+  get: () => request<{ checkinIntervalMinutes: number }>("/api/settings"),
+};
+
 // Auth
 export const auth = {
   login: (username: string, password: string) =>
     request<{ token: string; username: string; role: string }>("/api/auth/login", {
       method: "POST",
       body: JSON.stringify({ username, password }),
+    }),
+  changePassword: (currentPassword: string, newPassword: string) =>
+    request("/api/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify({ currentPassword, newPassword }),
     }),
 };
 
@@ -55,10 +76,13 @@ export const devices = {
   getLicense: (id: string) => request<LicenseInfo>(`/api/devices/${id}/license`),
   getPending: () => request<PendingDevice[]>("/api/devices/pending"),
   getPendingCount: () => request<{ count: number }>("/api/devices/pending/count"),
+  getStats: () => request<{ total: number; online: number; offline: number; pending: number }>("/api/devices/stats"),
   approve: (id: string, data: { customerId?: string; groupId?: string }) =>
     request(`/api/devices/pending/${id}/approve`, { method: "POST", body: JSON.stringify(data) }),
   reject: (id: string) =>
     request(`/api/devices/pending/${id}/reject`, { method: "POST" }),
+  delete: (id: string) =>
+    request(`/api/devices/${id}`, { method: "DELETE" }),
 };
 
 // Customers
@@ -152,6 +176,13 @@ export interface Customer {
   contactEmail: string;
   createdAt: string;
   deviceCount: number;
+}
+
+export interface AppUser {
+  id: string;
+  username: string;
+  role: string;
+  createdAt: string;
 }
 
 export interface Group {

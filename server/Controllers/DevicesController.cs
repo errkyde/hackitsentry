@@ -131,6 +131,27 @@ public class DevicesController : ControllerBase
         }));
     }
 
+    // GET /api/settings
+    [HttpGet("/api/settings")]
+    public IActionResult GetSettings()
+    {
+        return Ok(new
+        {
+            checkinIntervalMinutes = _config.GetValue<int>("CheckinIntervalMinutes", 30)
+        });
+    }
+
+    // GET /api/devices/stats
+    [HttpGet("stats")]
+    public async Task<IActionResult> GetStats()
+    {
+        var onlineThreshold = DateTime.UtcNow.AddMinutes(-(_config.GetValue<int>("CheckinIntervalMinutes", 30) * 2 + 5));
+        var total = await _db.Devices.CountAsync();
+        var online = await _db.Devices.CountAsync(d => d.LastSeenAt != null && d.LastSeenAt > onlineThreshold);
+        var pending = await _db.PendingDevices.CountAsync(p => p.Status == PendingDeviceStatus.Pending);
+        return Ok(new { total, online, offline = total - online, pending });
+    }
+
     // GET /api/devices/pending/count
     [HttpGet("pending/count")]
     public async Task<IActionResult> GetPendingCount()
@@ -184,6 +205,20 @@ public class DevicesController : ControllerBase
         await _db.SaveChangesAsync();
 
         return Ok();
+    }
+
+    // DELETE /api/devices/{id}
+    [HttpDelete("{id:guid}")]
+    public async Task<IActionResult> DeleteDevice(Guid id)
+    {
+        var device = await _db.Devices.FindAsync(id);
+        if (device == null)
+            return NotFound();
+
+        _db.Devices.Remove(device);
+        await _db.SaveChangesAsync();
+
+        return NoContent();
     }
 
     // GET /api/devices/{id}/software
