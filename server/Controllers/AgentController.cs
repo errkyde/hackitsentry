@@ -60,9 +60,9 @@ public class AgentController : ControllerBase
 
         if (pending.Status == PendingDeviceStatus.Approved)
         {
-            var device = await _db.Devices
-                .FirstOrDefaultAsync(d => d.Hostname == pending.Hostname
-                    && d.CreatedAt >= pending.RequestedAt);
+            var device = pending.ApprovedDeviceId.HasValue
+                ? await _db.Devices.FindAsync(pending.ApprovedDeviceId.Value)
+                : null;
             return Ok(new
             {
                 status = "Approved",

@@ -18,8 +18,6 @@ npm-debug.log*
 # Build artifacts
 publish/
 
-# Docker
-.dockerignore
 
 # OS
 .DS_Store

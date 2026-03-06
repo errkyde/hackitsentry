@@ -99,12 +99,12 @@ public class DevicesController : ControllerBase
         if (device == null)
             return NotFound();
 
+        // Description: only update if explicitly sent (non-null)
         if (request.Description != null)
             device.Description = request.Description;
-        if (request.CustomerId.HasValue)
-            device.CustomerId = request.CustomerId == Guid.Empty ? null : request.CustomerId;
-        if (request.GroupId.HasValue)
-            device.GroupId = request.GroupId == Guid.Empty ? null : request.GroupId;
+        // CustomerId/GroupId: null = clear, Guid = set (frontend always sends these)
+        device.CustomerId = request.CustomerId;
+        device.GroupId = request.GroupId;
 
         await _db.SaveChangesAsync();
         return Ok();
@@ -164,6 +164,7 @@ public class DevicesController : ControllerBase
 
         _db.Devices.Add(device);
         pending.Status = PendingDeviceStatus.Approved;
+        pending.ApprovedDeviceId = device.Id;
         await _db.SaveChangesAsync();
 
         return Ok(new { deviceId = device.Id });

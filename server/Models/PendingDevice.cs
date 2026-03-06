@@ -12,4 +12,7 @@ public class PendingDevice
     public double RamTotalGB { get; set; }
     public DateTime RequestedAt { get; set; } = DateTime.UtcNow;
     public PendingDeviceStatus Status { get; set; } = PendingDeviceStatus.Pending;
+
+    // Set when approved — lets agent polling retrieve the API key reliably
+    public Guid? ApprovedDeviceId { get; set; }
 }
