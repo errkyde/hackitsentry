@@ -1,0 +1,30 @@
+# .NET
+bin/
+obj/
+*.user
+.vs/
+*.suo
+*.userprefs
+*.DotSettings
+
+# Node / Frontend
+node_modules/
+dist/
+.env
+.env.local
+.env.*.local
+npm-debug.log*
+
+# Build artifacts
+publish/
+
+# Docker
+.dockerignore
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets (never commit real keys)
+appsettings.Production.json
+agent-state.json
