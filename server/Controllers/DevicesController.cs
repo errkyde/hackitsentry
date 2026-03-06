@@ -60,17 +60,18 @@ public class DevicesController : ControllerBase
         if (maxRam.HasValue)
             query = query.Where(d => d.RamTotalGB <= maxRam);
 
-        var devices = await query.OrderBy(d => d.Hostname).ToListAsync();
-
-        var result = devices.Select(d => MapToListDto(d, onlineThreshold));
-
         if (!string.IsNullOrWhiteSpace(status))
         {
             var isOnline = status.Equals("online", StringComparison.OrdinalIgnoreCase);
-            result = result.Where(d => d.IsOnline == isOnline);
+            if (isOnline)
+                query = query.Where(d => d.LastSeenAt != null && d.LastSeenAt > onlineThreshold);
+            else
+                query = query.Where(d => d.LastSeenAt == null || d.LastSeenAt <= onlineThreshold);
         }
 
-        return Ok(result);
+        var devices = await query.OrderBy(d => d.Hostname).ToListAsync();
+
+        return Ok(devices.Select(d => MapToListDto(d, onlineThreshold)));
     }
 
     // GET /api/devices/{id}
