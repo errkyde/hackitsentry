@@ -17,6 +17,7 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 
 builder.Services.AddSingleton<JwtService>();
 builder.Services.AddSingleton<LicenseEncryptionService>();
+builder.Services.AddSingleton<RuntimeSettings>();
 builder.Services.AddSingleton<AlertEmailService>();
 builder.Services.AddHostedService<DeviceOfflineAlertService>();
 
@@ -46,11 +47,20 @@ builder.Services.AddCors(options =>
 
 var app = builder.Build();
 
-// Initialize DB and seed admin
+// Initialize DB, seed admin, load runtime settings
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     db.Database.EnsureCreated();
+
+    // Create AppSettings table for existing deployments (EnsureCreated won't add new tables)
+    db.Database.ExecuteSqlRaw("""
+        CREATE TABLE IF NOT EXISTS "AppSettings" (
+            "Key"   text NOT NULL,
+            "Value" text NOT NULL,
+            CONSTRAINT "PK_AppSettings" PRIMARY KEY ("Key")
+        )
+        """);
 
     if (!db.Users.Any())
     {
@@ -63,6 +73,12 @@ using (var scope = app.Services.CreateScope())
         db.SaveChanges();
         Console.WriteLine("Created default admin user: admin / admin");
     }
+
+    // Bootstrap RuntimeSettings: env/appsettings first, then DB overrides
+    var runtimeSettings = app.Services.GetRequiredService<RuntimeSettings>();
+    runtimeSettings.LoadFromConfig(app.Configuration);
+    var dbSettings = db.AppSettings.ToList();
+    runtimeSettings.LoadFromDb(dbSettings);
 }
 
 if (app.Environment.IsDevelopment())

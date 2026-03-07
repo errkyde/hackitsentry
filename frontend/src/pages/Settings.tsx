@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { KeyRound, UserPlus, Trash2, RefreshCw } from "lucide-react";
-import { auth, users, type AppUser } from "@/lib/api";
+import { KeyRound, UserPlus, Trash2, RefreshCw, Mail, Send, CheckCircle2, XCircle } from "lucide-react";
+import { auth, users, settings, type AppUser, type EmailSettingsInput } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -51,6 +51,61 @@ export function Settings() {
   const [resetLoading, setResetLoading] = useState(false);
 
   const [deleteConfirm, setDeleteConfirm] = useState<AppUser | null>(null);
+
+  // --- Email settings ---
+  const [emailForm, setEmailForm] = useState<EmailSettingsInput>({
+    host: "", port: 587, username: "", password: "", from: "sentry@localhost", to: "", useSsl: false,
+  });
+  const [emailHasPassword, setEmailHasPassword] = useState(false);
+  const [emailLoading, setEmailLoading] = useState(false);
+  const [emailSaveMsg, setEmailSaveMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [testLoading, setTestLoading] = useState(false);
+  const [testMsg, setTestMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  useEffect(() => {
+    settings.getEmail().then(data => {
+      setEmailForm(f => ({
+        ...f,
+        host: data.host,
+        port: data.port,
+        username: data.username,
+        from: data.from,
+        to: data.to,
+        useSsl: data.useSsl,
+        password: "",
+      }));
+      setEmailHasPassword(data.hasPassword);
+    }).catch(() => {});
+  }, []);
+
+  const handleSaveEmail = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setEmailSaveMsg(null);
+    setEmailLoading(true);
+    try {
+      const res = await settings.saveEmail(emailForm);
+      setEmailSaveMsg({ ok: true, text: res.message });
+      if (emailForm.password) setEmailHasPassword(true);
+      setEmailForm(f => ({ ...f, password: "" }));
+    } catch (err: any) {
+      setEmailSaveMsg({ ok: false, text: err.message || "Fehler beim Speichern." });
+    } finally {
+      setEmailLoading(false);
+    }
+  };
+
+  const handleTestEmail = async () => {
+    setTestMsg(null);
+    setTestLoading(true);
+    try {
+      const res = await settings.testEmail();
+      setTestMsg({ ok: true, text: res.message });
+    } catch (err: any) {
+      setTestMsg({ ok: false, text: err.message || "Test fehlgeschlagen." });
+    } finally {
+      setTestLoading(false);
+    }
+  };
 
   const fetchUsers = async () => {
     const data = await users.list();
@@ -124,6 +179,114 @@ export function Settings() {
             <Button type="submit" disabled={pwLoading || !pwCurrent || !pwNext || !pwConfirm}>
               {pwLoading ? "Wird geändert..." : "Passwort ändern"}
             </Button>
+          </form>
+        </CardContent>
+      </Card>
+
+      {/* Email alerting */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Mail className="h-4 w-4" />
+            E-Mail Benachrichtigungen
+          </CardTitle>
+          <CardDescription>
+            Automatische Alerts wenn Geräte offline gehen oder sich wieder verbinden.
+            Leer lassen um Benachrichtigungen zu deaktivieren.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={handleSaveEmail} className="space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>SMTP Host</Label>
+                <Input
+                  placeholder="smtp.example.com"
+                  value={emailForm.host}
+                  onChange={e => setEmailForm(f => ({ ...f, host: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Port</Label>
+                <Input
+                  type="number"
+                  value={emailForm.port}
+                  onChange={e => setEmailForm(f => ({ ...f, port: Number(e.target.value) }))}
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Benutzername</Label>
+                <Input
+                  placeholder="user@example.com"
+                  value={emailForm.username}
+                  onChange={e => setEmailForm(f => ({ ...f, username: e.target.value }))}
+                  autoComplete="off"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Passwort {emailHasPassword && <span className="text-xs text-muted-foreground">(gesetzt)</span>}</Label>
+                <Input
+                  type="password"
+                  placeholder={emailHasPassword ? "Leer lassen um beizubehalten" : ""}
+                  value={emailForm.password}
+                  onChange={e => setEmailForm(f => ({ ...f, password: e.target.value }))}
+                  autoComplete="new-password"
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Absender (From)</Label>
+                <Input
+                  placeholder="sentry@example.com"
+                  value={emailForm.from}
+                  onChange={e => setEmailForm(f => ({ ...f, from: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Empfänger (To)</Label>
+                <Input
+                  placeholder="admin@example.com"
+                  value={emailForm.to}
+                  onChange={e => setEmailForm(f => ({ ...f, to: e.target.value }))}
+                />
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                id="useSsl"
+                type="checkbox"
+                className="h-4 w-4 rounded border-border"
+                checked={emailForm.useSsl}
+                onChange={e => setEmailForm(f => ({ ...f, useSsl: e.target.checked }))}
+              />
+              <Label htmlFor="useSsl" className="cursor-pointer">SSL direkt (Port 465); unkontrolliert = STARTTLS</Label>
+            </div>
+
+            {emailSaveMsg && (
+              <div className={`flex items-center gap-2 text-sm ${emailSaveMsg.ok ? "text-emerald-400" : "text-destructive"}`}>
+                {emailSaveMsg.ok ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
+                {emailSaveMsg.text}
+              </div>
+            )}
+
+            <div className="flex gap-2">
+              <Button type="submit" disabled={emailLoading}>
+                {emailLoading ? "Speichern..." : "Speichern"}
+              </Button>
+              <Button type="button" variant="outline" onClick={handleTestEmail} disabled={testLoading}>
+                <Send className="h-3.5 w-3.5 mr-1.5" />
+                {testLoading ? "Wird gesendet..." : "Test-E-Mail"}
+              </Button>
+            </div>
+            {testMsg && (
+              <div className={`flex items-center gap-2 text-sm ${testMsg.ok ? "text-emerald-400" : "text-destructive"}`}>
+                {testMsg.ok ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
+                {testMsg.text}
+              </div>
+            )}
           </form>
         </CardContent>
       </Card>

@@ -7,43 +7,41 @@ public class DeviceOfflineAlertService : BackgroundService
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly AlertEmailService _email;
+    private readonly RuntimeSettings _settings;
     private readonly IConfiguration _config;
     private readonly ILogger<DeviceOfflineAlertService> _logger;
 
-    // Devices known to be offline (survives between check cycles, reset on restart)
     private readonly HashSet<Guid> _knownOffline = [];
 
     public DeviceOfflineAlertService(
         IServiceScopeFactory scopeFactory,
         AlertEmailService email,
+        RuntimeSettings settings,
         IConfiguration config,
         ILogger<DeviceOfflineAlertService> logger)
     {
         _scopeFactory = scopeFactory;
         _email = email;
+        _settings = settings;
         _config = config;
         _logger = logger;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        if (!_email.IsConfigured)
-        {
-            _logger.LogInformation("Email not configured – device offline alerts disabled.");
-            return;
-        }
+        if (!_settings.IsEmailConfigured)
+            _logger.LogInformation("Email not configured at startup – device offline alerts disabled until configured.");
 
-        // Wait a bit after startup so the DB is ready
         await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
-
-        // Seed initial offline set without sending alerts (devices may already be offline at startup)
         await SeedInitialStateAsync();
 
         while (!stoppingToken.IsCancellationRequested)
         {
             var intervalMinutes = _config.GetValue<int>("CheckinIntervalMinutes", 30);
             await Task.Delay(TimeSpan.FromMinutes(intervalMinutes), stoppingToken);
-            await CheckDevicesAsync();
+
+            if (_settings.IsEmailConfigured)
+                await CheckDevicesAsync();
         }
     }
 
@@ -63,7 +61,7 @@ public class DeviceOfflineAlertService : BackgroundService
             foreach (var id in offlineIds)
                 _knownOffline.Add(id);
 
-            _logger.LogInformation("Device alert service started. {Count} devices already offline (no alerts sent).", offlineIds.Count);
+            _logger.LogInformation("Device alert service started. {Count} device(s) already offline.", offlineIds.Count);
         }
         catch (Exception ex)
         {
@@ -78,6 +76,7 @@ public class DeviceOfflineAlertService : BackgroundService
             using var scope = _scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
             var threshold = GetOnlineThreshold();
+            var intervalMinutes = _config.GetValue<int>("CheckinIntervalMinutes", 30);
 
             var devices = await db.Devices
                 .Include(d => d.Customer)
@@ -90,10 +89,8 @@ public class DeviceOfflineAlertService : BackgroundService
             foreach (var device in devices)
             {
                 var isOffline = device.LastSeenAt == null || device.LastSeenAt <= threshold;
-
                 if (isOffline && _knownOffline.Add(device.Id))
                     newlyOffline.Add((device.Hostname, device.CustomerName, device.LastSeenAt));
-
                 if (!isOffline && _knownOffline.Remove(device.Id))
                     recovered.Add((device.Hostname, device.CustomerName));
             }
@@ -109,9 +106,9 @@ public class DeviceOfflineAlertService : BackgroundService
                     $"[HackIT Sentry] {newlyOffline.Count} device(s) went offline",
                     $"The following device(s) have gone offline:\n\n{string.Join("\n", lines)}\n\n" +
                     $"Checked at: {DateTime.UtcNow:yyyy-MM-dd HH:mm} UTC\n" +
-                    $"Online threshold: last check-in within {_config.GetValue<int>("CheckinIntervalMinutes", 30) * 2 + 5} minutes");
+                    $"Online threshold: last check-in within {intervalMinutes * 2 + 5} minutes");
 
-                _logger.LogWarning("Alert sent: {Count} device(s) went offline.", newlyOffline.Count);
+                _logger.LogWarning("Offline alert sent: {Count} device(s).", newlyOffline.Count);
             }
 
             if (recovered.Count > 0)
@@ -124,7 +121,7 @@ public class DeviceOfflineAlertService : BackgroundService
                     $"The following device(s) are back online:\n\n{string.Join("\n", lines)}\n\n" +
                     $"Recovered at: {DateTime.UtcNow:yyyy-MM-dd HH:mm} UTC");
 
-                _logger.LogInformation("Recovery alert sent: {Count} device(s) back online.", recovered.Count);
+                _logger.LogInformation("Recovery alert sent: {Count} device(s).", recovered.Count);
             }
         }
         catch (Exception ex)

@@ -46,6 +46,11 @@ export const users = {
 // Settings
 export const settings = {
   get: () => request<{ checkinIntervalMinutes: number }>("/api/settings"),
+  getEmail: () => request<EmailSettings>("/api/settings/email"),
+  saveEmail: (data: EmailSettingsInput) =>
+    request<{ message: string }>("/api/settings/email", { method: "PUT", body: JSON.stringify(data) }),
+  testEmail: () =>
+    request<{ message: string }>("/api/settings/email/test", { method: "POST" }),
 };
 
 // Auth
@@ -183,6 +188,27 @@ export interface AppUser {
   username: string;
   role: string;
   createdAt: string;
+}
+
+export interface EmailSettings {
+  host: string;
+  port: number;
+  username: string;
+  hasPassword: boolean;
+  from: string;
+  to: string;
+  useSsl: boolean;
+  isConfigured: boolean;
+}
+
+export interface EmailSettingsInput {
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+  from: string;
+  to: string;
+  useSsl: boolean;
 }
 
 export interface Group {

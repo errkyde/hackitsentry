@@ -7,6 +7,7 @@ public class AppDbContext : DbContext
 {
     public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }
 
+    public DbSet<AppSetting> AppSettings { get; set; }
     public DbSet<User> Users { get; set; }
     public DbSet<Customer> Customers { get; set; }
     public DbSet<DeviceGroup> Groups { get; set; }
@@ -18,6 +19,10 @@ public class AppDbContext : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        modelBuilder.Entity<AppSetting>()
+            .HasKey(s => s.Key);
+
+
         modelBuilder.Entity<Device>()
             .HasOne(d => d.Customer)
             .WithMany(c => c.Devices)

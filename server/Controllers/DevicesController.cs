@@ -132,16 +132,6 @@ public class DevicesController : ControllerBase
         }));
     }
 
-    // GET /api/settings
-    [HttpGet("/api/settings")]
-    public IActionResult GetSettings()
-    {
-        return Ok(new
-        {
-            checkinIntervalMinutes = _config.GetValue<int>("CheckinIntervalMinutes", 30)
-        });
-    }
-
     // GET /api/devices/stats
     [HttpGet("stats")]
     public async Task<IActionResult> GetStats()
