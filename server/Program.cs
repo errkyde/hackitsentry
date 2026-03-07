@@ -17,6 +17,8 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 
 builder.Services.AddSingleton<JwtService>();
 builder.Services.AddSingleton<LicenseEncryptionService>();
+builder.Services.AddSingleton<AlertEmailService>();
+builder.Services.AddHostedService<DeviceOfflineAlertService>();
 
 var jwtKey = builder.Configuration["Jwt:Key"]!;
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
