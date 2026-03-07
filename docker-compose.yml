@@ -5,7 +5,7 @@ services:
     environment:
       POSTGRES_DB: hackit_sentry
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -25,10 +25,10 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ASPNETCORE_URLS: http://+:5000
-      ConnectionStrings__DefaultConnection: "Host=db;Database=hackit_sentry;Username=postgres;Password=postgres"
-      Jwt__Key: "change-this-secret-in-production-must-be-at-least-32-chars!!"
-      Encryption__Key: "change-this-aes-key-in-production-32chars!!"
-      CheckinIntervalMinutes: 30
+      ConnectionStrings__DefaultConnection: "Host=db;Database=hackit_sentry;Username=postgres;Password=${POSTGRES_PASSWORD:-postgres}"
+      Jwt__Key: "${JWT_KEY:-change-this-secret-in-production-must-be-at-least-32-chars!!}"
+      Encryption__Key: "${ENCRYPTION_KEY:-change-this-aes-key-in-production-32chars!!}"
+      CheckinIntervalMinutes: ${CHECKIN_INTERVAL_MINUTES:-30}
     ports:
       - "5000:5000"
     healthcheck:

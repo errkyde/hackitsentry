@@ -26,3 +26,6 @@ Thumbs.db
 # Secrets (never commit real keys)
 appsettings.Production.json
 agent-state.json
+
+# SSL certificates
+certs/
