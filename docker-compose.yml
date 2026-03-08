@@ -36,8 +36,6 @@ services:
       Email__From: "${EMAIL_FROM:-sentry@localhost}"
       Email__To: "${EMAIL_TO:-}"
       Email__UseSsl: "${EMAIL_USE_SSL:-false}"
-    ports:
-      - "3007:5000"
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:5000/api/auth/login || exit 0"]
       interval: 10s
