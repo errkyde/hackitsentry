@@ -10,4 +10,5 @@ public class LicenseInfo
     public string? OfficeKeyEncrypted { get; set; }
     public string OfficeVersion { get; set; } = "";
     public DateTime FetchedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? ExpiresAt { get; set; }
 }

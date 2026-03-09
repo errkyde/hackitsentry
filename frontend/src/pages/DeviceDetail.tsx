@@ -1,31 +1,35 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
-  ArrowLeft, Cpu, Globe, HardDrive, Package, Key, Save, RefreshCw, Trash2, Activity
+  ArrowLeft, Cpu, Globe, HardDrive, Package, Key, Save, RefreshCw,
+  Trash2, Activity, StickyNote, Terminal, Plus, Send, CheckCircle2
 } from "lucide-react";
 import {
   devices, customers, groups,
   type DeviceDetail as DeviceDetailType,
-  type Software, type LicenseInfo, type Customer, type Group
+  type Software, type LicenseInfo, type Customer, type Group,
+  type DeviceNote, type DeviceCommand
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
+import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
 function StatusDot({ online }: { online: boolean }) {
   return (
     <span className={cn(
       "inline-flex items-center gap-1.5 text-sm",
-      online ? "text-emerald-400" : "text-rose-400"
+      online ? "text-emerald-500" : "text-rose-500"
     )}>
-      <span className={cn("h-2 w-2 rounded-full", online ? "bg-emerald-400 animate-pulse" : "bg-rose-400")} />
+      <span className={cn("h-2 w-2 rounded-full", online ? "bg-emerald-500 animate-pulse" : "bg-rose-500")} />
       {online ? "Online" : "Offline"}
     </span>
   );
@@ -40,12 +44,27 @@ function InfoRow({ label, value }: { label: string; value?: string | number | nu
   );
 }
 
+const COMMAND_TYPES = [
+  { value: "Restart", label: "Neustart" },
+  { value: "Shutdown", label: "Herunterfahren" },
+  { value: "RunScript", label: "Script ausführen" },
+];
+
+const STATUS_COLORS: Record<string, string> = {
+  Pending: "bg-amber-500/15 text-amber-600 dark:text-amber-400",
+  Sent: "bg-blue-500/15 text-blue-600 dark:text-blue-400",
+  Executed: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
+  Failed: "bg-rose-500/15 text-rose-600 dark:text-rose-400",
+};
+
 export function DeviceDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [device, setDevice] = useState<DeviceDetailType | null>(null);
   const [software, setSoftware] = useState<Software[]>([]);
   const [license, setLicense] = useState<LicenseInfo | null>(null);
+  const [notes, setNotes] = useState<DeviceNote[]>([]);
+  const [commands, setCommands] = useState<DeviceCommand[]>([]);
   const [customerList, setCustomerList] = useState<Customer[]>([]);
   const [groupList, setGroupList] = useState<Group[]>([]);
   const [loading, setLoading] = useState(true);
@@ -60,6 +79,19 @@ export function DeviceDetail() {
   const [selectedCustomer, setSelectedCustomer] = useState("none");
   const [selectedGroup, setSelectedGroup] = useState("none");
 
+  // Notes state
+  const [newNote, setNewNote] = useState("");
+  const [noteLoading, setNoteLoading] = useState(false);
+
+  // Commands state
+  const [commandType, setCommandType] = useState("Restart");
+  const [commandParams, setCommandParams] = useState("");
+  const [commandLoading, setCommandLoading] = useState(false);
+
+  // License expiry state
+  const [expiryInput, setExpiryInput] = useState("");
+  const [expirySaving, setExpirySaving] = useState(false);
+
   useEffect(() => {
     if (!id) return;
     Promise.all([
@@ -67,17 +99,24 @@ export function DeviceDetail() {
       devices.getSoftware(id),
       customers.list(),
       groups.list(),
-    ]).then(([d, sw, cust, grp]) => {
+      devices.getNotes(id),
+      devices.getCommands(id),
+    ]).then(([d, sw, cust, grp, n, cmds]) => {
       setDevice(d);
       setSoftware(sw);
       setCustomerList(cust);
       setGroupList(grp);
+      setNotes(n);
+      setCommands(cmds);
       setDescription(d.description);
       setSelectedCustomer(d.customer?.id ?? "none");
       setSelectedGroup(d.group?.id ?? "none");
       setLoading(false);
     });
-    devices.getLicense(id).then(setLicense).catch(() => {});
+    devices.getLicense(id).then(l => {
+      setLicense(l);
+      setExpiryInput(l.expiresAt ? new Date(l.expiresAt).toISOString().split("T")[0] : "");
+    }).catch(() => {});
   }, [id]);
 
   const handleSave = async () => {
@@ -111,16 +150,52 @@ export function DeviceDetail() {
   const handleFetchLicense = async () => {
     if (!id) return;
     setLicenseLoading(true);
-    try { setLicense(await devices.getLicense(id)); } catch {}
+    try {
+      const l = await devices.getLicense(id);
+      setLicense(l);
+      setExpiryInput(l.expiresAt ? new Date(l.expiresAt).toISOString().split("T")[0] : "");
+    } catch {}
     setLicenseLoading(false);
   };
 
+  const handleSaveExpiry = async () => {
+    if (!id || !license) return;
+    setExpirySaving(true);
+    await devices.setLicenseExpiry(id, expiryInput || null).catch(() => {});
+    const l = await devices.getLicense(id).catch(() => null);
+    if (l) setLicense(l);
+    setExpirySaving(false);
+  };
+
+  const handleAddNote = async () => {
+    if (!id || !newNote.trim()) return;
+    setNoteLoading(true);
+    const note = await devices.addNote(id, newNote.trim()).catch(() => null);
+    if (note) setNotes(prev => [note, ...prev]);
+    setNewNote("");
+    setNoteLoading(false);
+  };
+
+  const handleDeleteNote = async (noteId: string) => {
+    if (!id) return;
+    await devices.deleteNote(id, noteId).catch(() => {});
+    setNotes(prev => prev.filter(n => n.id !== noteId));
+  };
+
+  const handleIssueCommand = async () => {
+    if (!id) return;
+    setCommandLoading(true);
+    const result = await devices.issueCommand(id, commandType, commandParams || undefined).catch(() => null);
+    if (result) {
+      const updatedCmds = await devices.getCommands(id).catch(() => commands);
+      setCommands(updatedCmds);
+    }
+    setCommandParams("");
+    setCommandLoading(false);
+  };
+
   if (loading) {
-    return (
-      <div className="flex items-center justify-center h-full text-muted-foreground">
-        Laden...
-      </div>
-    );
+    return <div className="flex items-center justify-center h-full text-muted-foreground">Laden...</div>;
   }
 
   if (!device) return null;
@@ -213,12 +288,24 @@ export function DeviceDetail() {
 
       {/* Tabs */}
       <Tabs defaultValue="hardware">
-        <TabsList className="w-full justify-start">
+        <TabsList className="w-full justify-start flex-wrap">
           <TabsTrigger value="hardware"><Cpu className="h-3.5 w-3.5 mr-1.5" />Hardware</TabsTrigger>
           <TabsTrigger value="network"><Globe className="h-3.5 w-3.5 mr-1.5" />Netzwerk</TabsTrigger>
           <TabsTrigger value="disks"><HardDrive className="h-3.5 w-3.5 mr-1.5" />Festplatten</TabsTrigger>
           <TabsTrigger value="software"><Package className="h-3.5 w-3.5 mr-1.5" />Software ({software.length})</TabsTrigger>
           <TabsTrigger value="licenses"><Key className="h-3.5 w-3.5 mr-1.5" />Lizenzen</TabsTrigger>
+          <TabsTrigger value="notes">
+            <StickyNote className="h-3.5 w-3.5 mr-1.5" />
+            Notizen {notes.length > 0 && <Badge variant="secondary" className="ml-1 h-4 px-1 text-xs">{notes.length}</Badge>}
+          </TabsTrigger>
+          <TabsTrigger value="commands">
+            <Terminal className="h-3.5 w-3.5 mr-1.5" />
+            Befehle {commands.filter(c => c.status === "Pending" || c.status === "Sent").length > 0 && (
+              <Badge variant="secondary" className="ml-1 h-4 px-1 text-xs">
+                {commands.filter(c => c.status === "Pending" || c.status === "Sent").length}
+              </Badge>
+            )}
+          </TabsTrigger>
           <TabsTrigger value="history"><Activity className="h-3.5 w-3.5 mr-1.5" />Verlauf</TabsTrigger>
         </TabsList>
 
@@ -371,7 +458,7 @@ export function DeviceDetail() {
               </div>
 
               {device.licenseRequested && !license && (
-                <div className="rounded-md bg-amber-500/10 border border-amber-500/20 px-4 py-3 text-sm text-amber-400">
+                <div className="rounded-md bg-amber-500/10 border border-amber-500/20 px-4 py-3 text-sm text-amber-500">
                   Warte auf Antwort des Agents beim nächsten Check-in...
                 </div>
               )}
@@ -404,6 +491,36 @@ export function DeviceDetail() {
                     </div>
                   )}
 
+                  {/* Expiry */}
+                  <div className="rounded-md border border-border p-4 space-y-3">
+                    <h3 className="text-sm font-medium">Ablaufdatum</h3>
+                    {license.expiresAt && new Date(license.expiresAt) <= new Date() && (
+                      <div className="text-xs text-rose-500 font-medium">Lizenz ist abgelaufen!</div>
+                    )}
+                    {license.expiresAt && new Date(license.expiresAt) > new Date() &&
+                      new Date(license.expiresAt) <= new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) && (
+                      <div className="text-xs text-amber-500 font-medium">
+                        Läuft ab am {new Date(license.expiresAt).toLocaleDateString("de-DE")}
+                      </div>
+                    )}
+                    <div className="flex items-center gap-2">
+                      <Input
+                        type="date"
+                        value={expiryInput}
+                        onChange={e => setExpiryInput(e.target.value)}
+                        className="w-44"
+                      />
+                      <Button size="sm" variant="outline" onClick={handleSaveExpiry} disabled={expirySaving}>
+                        {expirySaving ? "..." : "Speichern"}
+                      </Button>
+                      {expiryInput && (
+                        <Button size="sm" variant="ghost" onClick={() => { setExpiryInput(""); devices.setLicenseExpiry(id!, null); }}>
+                          Löschen
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+
                   <p className="text-xs text-muted-foreground">
                     Abgerufen: {new Date(license.fetchedAt).toLocaleString("de-DE")}
                   </p>
@@ -416,7 +533,151 @@ export function DeviceDetail() {
             </CardContent>
           </Card>
         </TabsContent>
-      </Tabs>
+
+        {/* Notes */}
+        <TabsContent value="notes">
+          <Card>
+            <CardContent className="pt-6 space-y-4">
+              <div className="flex gap-2">
+                <Textarea
+                  placeholder="Neue Notiz hinzufügen..."
+                  value={newNote}
+                  onChange={e => setNewNote(e.target.value)}
+                  className="min-h-[80px] resize-none"
+                  onKeyDown={e => {
+                    if (e.key === "Enter" && e.ctrlKey) handleAddNote();
+                  }}
+                />
+                <Button
+                  size="sm"
+                  onClick={handleAddNote}
+                  disabled={noteLoading || !newNote.trim()}
+                  className="self-end"
+                >
+                  <Send className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">Strg+Enter zum Senden</p>
+
+              {notes.length === 0 ? (
+                <p className="text-sm text-muted-foreground">Noch keine Notizen vorhanden.</p>
+              ) : (
+                <div className="space-y-3">
+                  {notes.map(note => (
+                    <div key={note.id} className="rounded-md border border-border p-4">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-medium">{note.authorUsername}</span>
+                          <span className="text-xs text-muted-foreground">
+                            {new Date(note.createdAt).toLocaleString("de-DE")}
+                          </span>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6 hover:text-destructive"
+                          onClick={() => handleDeleteNote(note.id)}
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </Button>
+                      </div>
+                      <p className="text-sm whitespace-pre-wrap">{note.content}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Commands */}
+        <TabsContent value="commands">
+          <Card>
+            <CardContent className="pt-6 space-y-4">
+              {/* Issue command */}
+              <div className="rounded-md border border-border p-4 space-y-3">
+                <h3 className="text-sm font-medium flex items-center gap-2">
+                  <Plus className="h-3.5 w-3.5" />
+                  Befehl senden
+                </h3>
+                <div className="flex gap-2 items-end">
+                  <div className="space-y-1.5 flex-1">
+                    <Label>Befehlstyp</Label>
+                    <Select value={commandType} onValueChange={setCommandType}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {COMMAND_TYPES.map(ct => (
+                          <SelectItem key={ct.value} value={ct.value}>{ct.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {commandType === "RunScript" && (
+                    <div className="space-y-1.5 flex-2">
+                      <Label>Parameter / Script</Label>
+                      <Input
+                        value={commandParams}
+                        onChange={e => setCommandParams(e.target.value)}
+                        placeholder="Script-Inhalt oder Pfad"
+                      />
+                    </div>
+                  )}
+                  <Button
+                    onClick={handleIssueCommand}
+                    disabled={commandLoading}
+                    className="shrink-0"
+                  >
+                    <Send className="h-3.5 w-3.5 mr-1.5" />
+                    {commandLoading ? "Senden..." : "Senden"}
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Der Befehl wird beim nächsten Check-in des Agents ausgeführt.
+                </p>
+              </div>
+
+              {/* Command history */}
+              {commands.length === 0 ? (
+                <p className="text-sm text-muted-foreground">Noch keine Befehle gesendet.</p>
+              ) : (
+                <div className="rounded-md border border-border overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-border bg-muted/30">
+                        <th className="text-left px-3 py-2.5 font-medium text-muted-foreground">Befehl</th>
+                        <th className="text-left px-3 py-2.5 font-medium text-muted-foreground">Status</th>
+                        <th className="text-left px-3 py-2.5 font-medium text-muted-foreground">Gesendet von</th>
+                        <th className="text-left px-3 py-2.5 font-medium text-muted-foreground">Zeitpunkt</th>
+                        <th className="text-left px-3 py-2.5 font-medium text-muted-foreground">Ergebnis</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {commands.map(cmd => (
+                        <tr key={cmd.id} className="border-t border-border/50">
+                          <td className="px-3 py-2.5 font-medium">{cmd.commandType}</td>
+                          <td className="px-3 py-2.5">
+                            <span className={cn("text-xs px-2 py-0.5 rounded-full font-medium", STATUS_COLORS[cmd.status] ?? "bg-muted text-muted-foreground")}>
+                              {cmd.status}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2.5 text-muted-foreground">{cmd.issuedByUsername}</td>
+                          <td className="px-3 py-2.5 text-xs text-muted-foreground">
+                            {new Date(cmd.createdAt).toLocaleString("de-DE")}
+                          </td>
+                          <td className="px-3 py-2.5 text-xs text-muted-foreground max-w-[200px] truncate">
+                            {cmd.result || (cmd.status === "Executed" ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" /> : "—")}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
 
         {/* History */}
         <TabsContent value="history">
@@ -426,7 +687,6 @@ export function DeviceDetail() {
                 <p className="text-sm text-muted-foreground">Noch keine Check-in-Daten vorhanden.</p>
               ) : (
                 <div className="space-y-4">
-                  {/* RAM sparkline */}
                   <div>
                     <p className="text-xs text-muted-foreground mb-2">RAM-Auslastung (letzte Check-ins)</p>
                     <div className="flex items-end gap-0.5 h-16">
@@ -447,7 +707,6 @@ export function DeviceDetail() {
                     </div>
                   </div>
 
-                  {/* Table */}
                   <div className="rounded-md border border-border overflow-hidden max-h-72 overflow-y-auto">
                     <table className="w-full text-sm">
                       <thead className="sticky top-0 bg-muted/50">
@@ -482,6 +741,7 @@ export function DeviceDetail() {
             </CardContent>
           </Card>
         </TabsContent>
+      </Tabs>
 
       {/* Delete confirmation dialog */}
       <Dialog open={deleteDialog} onOpenChange={setDeleteDialog}>

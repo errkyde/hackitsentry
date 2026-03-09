@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import { Monitor, Clock, Users, Layers, LogOut, Shield, Settings } from "lucide-react";
+import {
+  LayoutDashboard, Monitor, Clock, Users, Layers, LogOut,
+  Shield, Settings, Package, Sun, Moon
+} from "lucide-react";
 import { devices } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -11,6 +14,7 @@ import { toast } from "@/lib/useToast";
 export function Layout() {
   const navigate = useNavigate();
   const [pendingCount, setPendingCount] = useState(0);
+  const [isDark, setIsDark] = useState(() => localStorage.getItem("theme") !== "light");
 
   useEffect(() => {
     let lastCount: number | null = null;
@@ -34,6 +38,13 @@ export function Layout() {
     return () => clearInterval(interval);
   }, []);
 
+  const toggleTheme = () => {
+    const next = !isDark;
+    setIsDark(next);
+    localStorage.setItem("theme", next ? "dark" : "light");
+    document.documentElement.classList.toggle("dark", next);
+  };
+
   const handleLogout = () => {
     localStorage.removeItem("token");
     localStorage.removeItem("username");
@@ -41,6 +52,7 @@ export function Layout() {
   };
 
   const navItems = [
+    { to: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
     { to: "/devices", icon: Monitor, label: "Geräte" },
     {
       to: "/pending",
@@ -48,6 +60,7 @@ export function Layout() {
       label: "Ausstehend",
       badge: pendingCount > 0 ? pendingCount : undefined,
     },
+    { to: "/software", icon: Package, label: "Software" },
     { to: "/groups", icon: Layers, label: "Gruppen" },
     { to: "/customers", icon: Users, label: "Kunden" },
     { to: "/settings", icon: Settings, label: "Einstellungen" },
@@ -96,8 +109,19 @@ export function Layout() {
           ))}
         </nav>
 
-        {/* Logout */}
-        <div className="p-3 border-t border-border">
+        {/* Bottom: theme toggle + logout */}
+        <div className="p-3 border-t border-border space-y-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="w-full justify-start text-muted-foreground hover:text-foreground"
+            onClick={toggleTheme}
+          >
+            {isDark
+              ? <><Sun className="h-4 w-4 mr-2" />Light Mode</>
+              : <><Moon className="h-4 w-4 mr-2" />Dark Mode</>
+            }
+          </Button>
           <Button
             variant="ghost"
             size="sm"

@@ -97,6 +97,30 @@ public class SettingsController : ControllerBase
 
         return Ok(new { message = "Test-E-Mail erfolgreich gesendet." });
     }
+
+    // GET /api/settings/alerts
+    [HttpGet("alerts")]
+    public async Task<IActionResult> GetAlertSettings()
+    {
+        var thresholdSetting = await _db.AppSettings.FindAsync("DiskAlertThresholdPercent");
+        var threshold = int.TryParse(thresholdSetting?.Value, out var t) ? t : 10;
+        return Ok(new { diskAlertThresholdPercent = threshold });
+    }
+
+    // PUT /api/settings/alerts
+    [HttpPut("alerts")]
+    public async Task<IActionResult> SaveAlertSettings([FromBody] AlertSettingsRequest req)
+    {
+        var threshold = Math.Clamp(req.DiskAlertThresholdPercent, 1, 99);
+        var existing = await _db.AppSettings.FindAsync("DiskAlertThresholdPercent");
+        if (existing != null)
+            existing.Value = threshold.ToString();
+        else
+            _db.AppSettings.Add(new AppSetting { Key = "DiskAlertThresholdPercent", Value = threshold.ToString() });
+
+        await _db.SaveChangesAsync();
+        return Ok(new { message = "Alert-Einstellungen gespeichert." });
+    }
 }
 
 public record EmailSettingsRequest(
@@ -107,3 +131,5 @@ public record EmailSettingsRequest(
     string? From,
     string? To,
     bool UseSsl);
+
+public record AlertSettingsRequest(int DiskAlertThresholdPercent);

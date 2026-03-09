@@ -14,19 +14,20 @@ public class AgentController : ControllerBase
     private readonly AppDbContext _db;
     private readonly LicenseEncryptionService _encryption;
     private readonly IConfiguration _config;
+    private readonly AlertEmailService _email;
 
-    public AgentController(AppDbContext db, LicenseEncryptionService encryption, IConfiguration config)
+    public AgentController(AppDbContext db, LicenseEncryptionService encryption, IConfiguration config, AlertEmailService email)
     {
         _db = db;
         _encryption = encryption;
         _config = config;
+        _email = email;
     }
 
     // POST /api/agent/register
     [HttpPost("register")]
     public async Task<IActionResult> Register([FromBody] RegisterRequest request)
     {
-        // Idempotent: if same token already exists, return current status
         var existing = await _db.PendingDevices
             .FirstOrDefaultAsync(p => p.RegistrationToken == request.RegistrationToken);
 
@@ -81,7 +82,6 @@ public class AgentController : ControllerBase
         if (device == null)
             return Unauthorized(new { message = "Invalid API key" });
 
-        // Update device info
         device.Hostname = request.Hostname;
         device.WindowsVersion = request.WindowsVersion;
         device.WindowsBuild = request.WindowsBuild;
@@ -93,7 +93,6 @@ public class AgentController : ControllerBase
         device.NetworkAdaptersJson = JsonSerializer.Serialize(request.NetworkAdapters);
         device.LastSeenAt = DateTime.UtcNow;
 
-        // Record checkin history
         _db.DeviceCheckins.Add(new DeviceCheckin
         {
             DeviceId = device.Id,
@@ -102,8 +101,8 @@ public class AgentController : ControllerBase
         });
 
         // Upsert installed software
-        var existing = _db.InstalledSoftware.Where(s => s.DeviceId == device.Id);
-        _db.InstalledSoftware.RemoveRange(existing);
+        var existingSoftware = _db.InstalledSoftware.Where(s => s.DeviceId == device.Id);
+        _db.InstalledSoftware.RemoveRange(existingSoftware);
 
         foreach (var sw in request.InstalledSoftware)
         {
@@ -119,7 +118,29 @@ public class AgentController : ControllerBase
 
         await _db.SaveChangesAsync();
 
-        return Ok(new { licenseRequested = device.LicenseRequested });
+        // Check disk space thresholds
+        await CheckDiskAlertsAsync(device, request.DiskDrives);
+
+        // Check installed software against blacklist
+        await CheckBlacklistAsync(device, request.InstalledSoftware);
+
+        // Check for pending commands
+        var hasPendingCommands = await _db.DeviceCommands
+            .AnyAsync(c => c.DeviceId == device.Id && c.Status == CommandStatus.Pending);
+
+        // Check for latest agent version
+        var latestVersion = await _db.AgentVersions
+            .Where(v => v.IsLatest)
+            .Select(v => new { v.Version, v.DownloadUrl })
+            .FirstOrDefaultAsync();
+
+        return Ok(new
+        {
+            licenseRequested = device.LicenseRequested,
+            hasPendingCommands,
+            latestAgentVersion = latestVersion?.Version,
+            agentDownloadUrl = latestVersion?.DownloadUrl
+        });
     }
 
     // POST /api/agent/request-key
@@ -152,6 +173,141 @@ public class AgentController : ControllerBase
         await _db.SaveChangesAsync();
 
         return Ok();
+    }
+
+    // GET /api/agent/commands/pending
+    [HttpGet("commands/pending")]
+    public async Task<IActionResult> GetPendingCommands()
+    {
+        var device = await GetDeviceByApiKey();
+        if (device == null)
+            return Unauthorized(new { message = "Invalid API key" });
+
+        var commands = await _db.DeviceCommands
+            .Where(c => c.DeviceId == device.Id && c.Status == CommandStatus.Pending)
+            .OrderBy(c => c.CreatedAt)
+            .Select(c => new
+            {
+                c.Id,
+                CommandType = c.CommandType.ToString(),
+                c.Parameters
+            })
+            .ToListAsync();
+
+        // Mark as Sent
+        var ids = commands.Select(c => c.Id).ToList();
+        if (ids.Count > 0)
+        {
+            await _db.DeviceCommands
+                .Where(c => ids.Contains(c.Id))
+                .ExecuteUpdateAsync(s => s.SetProperty(c => c.Status, CommandStatus.Sent));
+        }
+
+        return Ok(commands);
+    }
+
+    // POST /api/agent/commands/{id}/result
+    [HttpPost("commands/{id:guid}/result")]
+    public async Task<IActionResult> ReportCommandResult(Guid id, [FromBody] CommandResultRequest request)
+    {
+        var device = await GetDeviceByApiKey();
+        if (device == null)
+            return Unauthorized(new { message = "Invalid API key" });
+
+        var command = await _db.DeviceCommands
+            .FirstOrDefaultAsync(c => c.Id == id && c.DeviceId == device.Id);
+
+        if (command == null)
+            return NotFound();
+
+        command.Status = request.Success ? CommandStatus.Executed : CommandStatus.Failed;
+        command.ExecutedAt = DateTime.UtcNow;
+        command.Result = request.Message;
+
+        await _db.SaveChangesAsync();
+
+        return Ok();
+    }
+
+    private async Task CheckDiskAlertsAsync(Device device, List<DiskDriveDto> drives)
+    {
+        try
+        {
+            var thresholdSetting = await _db.AppSettings.FindAsync("DiskAlertThresholdPercent");
+            if (!int.TryParse(thresholdSetting?.Value, out var threshold))
+                threshold = 10; // default 10%
+
+            var criticalDrives = drives
+                .Where(d => d.TotalGB > 0 && (d.FreeGB / d.TotalGB * 100) < threshold)
+                .ToList();
+
+            if (criticalDrives.Count > 0)
+            {
+                var lines = criticalDrives.Select(d =>
+                    $"  • Drive {d.Drive}: {d.FreeGB:F1} GB free of {d.TotalGB:F1} GB " +
+                    $"({d.FreeGB / d.TotalGB * 100:F1}% free)");
+
+                await _email.SendAsync(
+                    $"[HackIT Sentry] Low disk space on {device.Hostname}",
+                    $"Device {device.Hostname} has critically low disk space:\n\n" +
+                    string.Join("\n", lines) +
+                    $"\n\nThreshold: {threshold}%\nChecked at: {DateTime.UtcNow:yyyy-MM-dd HH:mm} UTC");
+            }
+        }
+        catch
+        {
+            // Don't fail checkin on alert error
+        }
+    }
+
+    private async Task CheckBlacklistAsync(Device device, List<SoftwareDto> software)
+    {
+        try
+        {
+            var blacklist = await _db.SoftwareBlacklist.ToListAsync();
+            if (blacklist.Count == 0) return;
+
+            foreach (var entry in blacklist)
+            {
+                var matches = software.Where(s =>
+                    s.Name.Contains(entry.NamePattern, StringComparison.OrdinalIgnoreCase) &&
+                    (entry.Publisher == null || s.Publisher.Contains(entry.Publisher, StringComparison.OrdinalIgnoreCase)));
+
+                foreach (var match in matches)
+                {
+                    // Only create alert if not already open for this device+entry combo
+                    var exists = await _db.SoftwareAlerts.AnyAsync(a =>
+                        a.DeviceId == device.Id &&
+                        a.BlacklistEntryId == entry.Id &&
+                        a.AcknowledgedAt == null);
+
+                    if (!exists)
+                    {
+                        _db.SoftwareAlerts.Add(new SoftwareAlert
+                        {
+                            DeviceId = device.Id,
+                            BlacklistEntryId = entry.Id,
+                            SoftwareName = match.Name,
+                            SoftwareVersion = match.Version
+                        });
+
+                        await _email.SendAsync(
+                            $"[HackIT Sentry] Blacklisted software detected on {device.Hostname}",
+                            $"Blacklisted software was detected on {device.Hostname}:\n\n" +
+                            $"  Software: {match.Name} {match.Version}\n" +
+                            $"  Rule: {entry.NamePattern}" +
+                            (entry.Reason != null ? $"\n  Reason: {entry.Reason}" : "") +
+                            $"\n\nDetected at: {DateTime.UtcNow:yyyy-MM-dd HH:mm} UTC");
+                    }
+                }
+            }
+
+            await _db.SaveChangesAsync();
+        }
+        catch
+        {
+            // Don't fail checkin on alert error
+        }
     }
 
     private async Task<Device?> GetDeviceByApiKey()
@@ -195,3 +351,5 @@ public record LicenseSubmitRequest(
     string OfficeKey,
     string OfficeVersion
 );
+
+public record CommandResultRequest(bool Success, string? Message);

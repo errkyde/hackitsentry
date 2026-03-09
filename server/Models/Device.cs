@@ -25,4 +25,7 @@ public class Device
     public ICollection<DeviceCheckin> Checkins { get; set; } = [];
     public ICollection<InstalledSoftware> Software { get; set; } = [];
     public LicenseInfo? License { get; set; }
+    public ICollection<DeviceNote> Notes { get; set; } = [];
+    public ICollection<DeviceCommand> Commands { get; set; } = [];
+    public ICollection<SoftwareAlert> SoftwareAlerts { get; set; } = [];
 }

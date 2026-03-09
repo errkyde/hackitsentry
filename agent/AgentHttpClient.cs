@@ -92,8 +92,60 @@ public class AgentHttpClient
             _logger.LogError(ex, "License key submission failed");
         }
     }
+
+    public async Task<List<PendingCommandDto>?> GetPendingCommandsAsync()
+    {
+        try
+        {
+            var client = CreateClient();
+            var response = await client.GetAsync("api/agent/commands/pending");
+            response.EnsureSuccessStatusCode();
+            return await response.Content.ReadFromJsonAsync<List<PendingCommandDto>>();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to fetch pending commands");
+            return null;
+        }
+    }
+
+    public async Task ReportCommandResultAsync(Guid commandId, bool success, string? message)
+    {
+        try
+        {
+            var client = CreateClient();
+            var response = await client.PostAsJsonAsync(
+                $"api/agent/commands/{commandId}/result",
+                new { success, message });
+            response.EnsureSuccessStatusCode();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to report command result for {CommandId}", commandId);
+        }
+    }
+
+    public async Task<byte[]?> DownloadFileAsync(string url)
+    {
+        try
+        {
+            using var client = new HttpClient();
+            return await client.GetByteArrayAsync(url);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to download file from {Url}", url);
+            return null;
+        }
+    }
 }
 
 public record RegisterResponse(string Status, Guid Id);
 public record RegistrationStatusResponse(string Status, string? ApiKey);
-public record CheckinResponse(bool LicenseRequested);
+public record CheckinResponse(
+    bool LicenseRequested,
+    bool HasPendingCommands,
+    string? LatestAgentVersion,
+    string? AgentDownloadUrl
+);
+public record PendingCommandDto(Guid Id, string CommandType, string? Parameters);

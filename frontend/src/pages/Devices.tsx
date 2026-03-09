@@ -1,11 +1,18 @@
 import { useEffect, useState, useCallback } from "react";
-import { useNavigate } from "react-router-dom";
-import { Search, ChevronRight, RefreshCw, Monitor, Wifi, WifiOff, Clock, Download } from "lucide-react";
-import { devices, customers, groups, type Device, type Customer, type Group } from "@/lib/api";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import {
+  Search, ChevronRight, RefreshCw, Monitor, Wifi, WifiOff, Clock,
+  Download, Trash2, Users, Layers, X
+} from "lucide-react";
+import {
+  devices, customers, groups,
+  type Device, type Customer, type Group
+} from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 
 function StatusBadge({ online }: { online: boolean }) {
@@ -13,12 +20,12 @@ function StatusBadge({ online }: { online: boolean }) {
     <span className={cn(
       "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium",
       online
-        ? "bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30"
-        : "bg-rose-500/10 text-rose-400 ring-1 ring-rose-500/20"
+        ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 ring-1 ring-emerald-500/30"
+        : "bg-rose-500/10 text-rose-600 dark:text-rose-400 ring-1 ring-rose-500/20"
     )}>
       {online
-        ? <><span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />Online</>
-        : <><span className="h-1.5 w-1.5 rounded-full bg-rose-400" />Offline</>
+        ? <><span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />Online</>
+        : <><span className="h-1.5 w-1.5 rounded-full bg-rose-500" />Offline</>
       }
     </span>
   );
@@ -26,6 +33,7 @@ function StatusBadge({ online }: { online: boolean }) {
 
 export function Devices() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [deviceList, setDeviceList] = useState<Device[]>([]);
   const [customerList, setCustomerList] = useState<Customer[]>([]);
   const [groupList, setGroupList] = useState<Group[]>([]);
@@ -34,9 +42,16 @@ export function Devices() {
 
   // Filters
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState(searchParams.get("status") ?? "all");
   const [groupFilter, setGroupFilter] = useState("all");
   const [customerFilter, setCustomerFilter] = useState("all");
+
+  // Bulk selection
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkAssignDialog, setBulkAssignDialog] = useState<"customer" | "group" | null>(null);
+  const [bulkAssignValue, setBulkAssignValue] = useState("none");
+  const [bulkDeleteDialog, setBulkDeleteDialog] = useState(false);
+  const [bulkLoading, setBulkLoading] = useState(false);
 
   const fetchDevices = useCallback(async () => {
     const params: Record<string, string> = {};
@@ -47,6 +62,7 @@ export function Devices() {
 
     const data = await devices.list(params);
     setDeviceList(data);
+    setSelected(new Set());
   }, [search, groupFilter, customerFilter, statusFilter]);
 
   useEffect(() => {
@@ -62,14 +78,9 @@ export function Devices() {
   const exportCsv = () => {
     const headers = ["Hostname", "Beschreibung", "Status", "Windows", "CPU", "RAM (GB)", "Kunde", "Gruppe", "Letzter Check-in"];
     const rows = deviceList.map(d => [
-      d.hostname,
-      d.description,
-      d.isOnline ? "Online" : "Offline",
-      d.windowsVersion,
-      d.cpuModel,
-      d.ramTotalGB,
-      d.customer?.name ?? "",
-      d.group?.name ?? "",
+      d.hostname, d.description, d.isOnline ? "Online" : "Offline",
+      d.windowsVersion, d.cpuModel, d.ramTotalGB,
+      d.customer?.name ?? "", d.group?.name ?? "",
       d.lastSeenAt ? new Date(d.lastSeenAt).toLocaleString("de-DE") : "",
     ]);
     const csv = [headers, ...rows]
@@ -93,6 +104,48 @@ export function Devices() {
     const hours = Math.floor(mins / 60);
     if (hours < 24) return `vor ${hours} Std.`;
     return `vor ${Math.floor(hours / 24)} Tagen`;
+  };
+
+  const toggleSelect = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selected.size === deviceList.length) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(deviceList.map(d => d.id)));
+    }
+  };
+
+  const handleBulkAssign = async () => {
+    setBulkLoading(true);
+    const ids = Array.from(selected);
+    const value = bulkAssignValue === "none" ? null : bulkAssignValue;
+    await devices.bulkUpdate({
+      deviceIds: ids,
+      ...(bulkAssignDialog === "customer" ? { setCustomerId: value } : { setGroupId: value }),
+    }).catch(() => {});
+    setBulkAssignDialog(null);
+    setBulkAssignValue("none");
+    setBulkLoading(false);
+    setSelected(new Set());
+    fetchDevices();
+  };
+
+  const handleBulkDelete = async () => {
+    setBulkLoading(true);
+    await devices.bulkDelete(Array.from(selected)).catch(() => {});
+    setBulkDeleteDialog(false);
+    setBulkLoading(false);
+    setSelected(new Set());
+    fetchDevices();
   };
 
   return (
@@ -121,9 +174,9 @@ export function Devices() {
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         {[
           { label: "Geräte gesamt", value: stats.total, icon: Monitor, color: "text-foreground" },
-          { label: "Online", value: stats.online, icon: Wifi, color: "text-emerald-400" },
-          { label: "Offline", value: stats.offline, icon: WifiOff, color: "text-rose-400" },
-          { label: "Ausstehend", value: stats.pending, icon: Clock, color: "text-amber-400" },
+          { label: "Online", value: stats.online, icon: Wifi, color: "text-emerald-500" },
+          { label: "Offline", value: stats.offline, icon: WifiOff, color: "text-rose-500" },
+          { label: "Ausstehend", value: stats.pending, icon: Clock, color: "text-amber-500" },
         ].map(({ label, value, icon: Icon, color }) => (
           <div key={label} className="rounded-lg border border-border bg-card px-4 py-3 flex items-center gap-3">
             <Icon className={`h-5 w-5 flex-shrink-0 ${color}`} />
@@ -180,11 +233,42 @@ export function Devices() {
         </Select>
       </div>
 
+      {/* Bulk action toolbar */}
+      {selected.size > 0 && (
+        <div className="flex items-center gap-3 rounded-lg border border-primary/30 bg-primary/5 px-4 py-2.5">
+          <span className="text-sm font-medium">{selected.size} ausgewählt</span>
+          <Button variant="outline" size="sm" onClick={() => { setBulkAssignValue("none"); setBulkAssignDialog("customer"); }}>
+            <Users className="h-3.5 w-3.5 mr-1.5" />
+            Kunde zuweisen
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => { setBulkAssignValue("none"); setBulkAssignDialog("group"); }}>
+            <Layers className="h-3.5 w-3.5 mr-1.5" />
+            Gruppe zuweisen
+          </Button>
+          <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => setBulkDeleteDialog(true)}>
+            <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+            Löschen
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => setSelected(new Set())} className="ml-auto">
+            <X className="h-3.5 w-3.5 mr-1" />
+            Abwählen
+          </Button>
+        </div>
+      )}
+
       {/* Table */}
       <div className="rounded-lg border border-border overflow-hidden">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border bg-muted/30">
+              <th className="px-3 py-3 w-10">
+                <input
+                  type="checkbox"
+                  checked={deviceList.length > 0 && selected.size === deviceList.length}
+                  onChange={toggleSelectAll}
+                  className="h-4 w-4 rounded border-border cursor-pointer"
+                />
+              </th>
               <th className="text-left px-4 py-3 font-medium text-muted-foreground">Status</th>
               <th className="text-left px-4 py-3 font-medium text-muted-foreground">Hostname</th>
               <th className="text-left px-4 py-3 font-medium text-muted-foreground">Windows</th>
@@ -198,23 +282,30 @@ export function Devices() {
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={8} className="px-4 py-12 text-center text-muted-foreground">
-                  Laden...
-                </td>
+                <td colSpan={9} className="px-4 py-12 text-center text-muted-foreground">Laden...</td>
               </tr>
             ) : deviceList.length === 0 ? (
               <tr>
-                <td colSpan={8} className="px-4 py-12 text-center text-muted-foreground">
-                  Keine Geräte gefunden
-                </td>
+                <td colSpan={9} className="px-4 py-12 text-center text-muted-foreground">Keine Geräte gefunden</td>
               </tr>
             ) : (
               deviceList.map((device) => (
                 <tr
                   key={device.id}
-                  className="border-b border-border/50 hover:bg-accent/30 cursor-pointer transition-colors"
+                  className={cn(
+                    "border-b border-border/50 hover:bg-accent/30 cursor-pointer transition-colors",
+                    selected.has(device.id) && "bg-primary/5"
+                  )}
                   onClick={() => navigate(`/devices/${device.id}`)}
                 >
+                  <td className="px-3 py-3 w-10" onClick={(e) => toggleSelect(device.id, e)}>
+                    <input
+                      type="checkbox"
+                      checked={selected.has(device.id)}
+                      onChange={() => {}}
+                      className="h-4 w-4 rounded border-border cursor-pointer"
+                    />
+                  </td>
                   <td className="px-4 py-3">
                     <StatusBadge online={device.isOnline} />
                   </td>
@@ -263,6 +354,68 @@ export function Devices() {
           </tbody>
         </table>
       </div>
+
+      {/* Bulk assign dialog */}
+      <Dialog open={!!bulkAssignDialog} onOpenChange={open => !open && setBulkAssignDialog(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>
+              {bulkAssignDialog === "customer" ? "Kunde zuweisen" : "Gruppe zuweisen"}
+            </DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            {selected.size} Gerät{selected.size !== 1 ? "e" : ""} werden aktualisiert.
+          </p>
+          {bulkAssignDialog === "customer" ? (
+            <Select value={bulkAssignValue} onValueChange={setBulkAssignValue}>
+              <SelectTrigger>
+                <SelectValue placeholder="Kunden auswählen" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">Kein Kunde (entfernen)</SelectItem>
+                {customerList.map(c => (
+                  <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : (
+            <Select value={bulkAssignValue} onValueChange={setBulkAssignValue}>
+              <SelectTrigger>
+                <SelectValue placeholder="Gruppe auswählen" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">Keine Gruppe (entfernen)</SelectItem>
+                {groupList.map(g => (
+                  <SelectItem key={g.id} value={g.id}>{g.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBulkAssignDialog(null)}>Abbrechen</Button>
+            <Button onClick={handleBulkAssign} disabled={bulkLoading}>
+              {bulkLoading ? "Wird gespeichert..." : "Übernehmen"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk delete dialog */}
+      <Dialog open={bulkDeleteDialog} onOpenChange={setBulkDeleteDialog}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader><DialogTitle>Geräte löschen</DialogTitle></DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Sollen <strong className="text-foreground">{selected.size} Gerät{selected.size !== 1 ? "e" : ""}</strong> wirklich gelöscht werden?
+            Diese Aktion ist nicht umkehrbar.
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBulkDeleteDialog(false)}>Abbrechen</Button>
+            <Button variant="destructive" onClick={handleBulkDelete} disabled={bulkLoading}>
+              {bulkLoading ? "Wird gelöscht..." : "Löschen"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

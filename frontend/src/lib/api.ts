@@ -88,6 +88,74 @@ export const devices = {
     request(`/api/devices/pending/${id}/reject`, { method: "POST" }),
   delete: (id: string) =>
     request(`/api/devices/${id}`, { method: "DELETE" }),
+  bulkUpdate: (data: { deviceIds: string[]; setCustomerId?: string | null; setGroupId?: string | null }) =>
+    request<{ updated: number }>("/api/devices/bulk", { method: "PATCH", body: JSON.stringify(data) }),
+  bulkDelete: (deviceIds: string[]) =>
+    request<{ deleted: number }>("/api/devices/bulk", { method: "DELETE", body: JSON.stringify({ deviceIds }) }),
+  getNotes: (id: string) => request<DeviceNote[]>(`/api/devices/${id}/notes`),
+  addNote: (id: string, content: string) =>
+    request<DeviceNote>(`/api/devices/${id}/notes`, { method: "POST", body: JSON.stringify({ content }) }),
+  deleteNote: (id: string, noteId: string) =>
+    request(`/api/devices/${id}/notes/${noteId}`, { method: "DELETE" }),
+  getCommands: (id: string) => request<DeviceCommand[]>(`/api/devices/${id}/commands`),
+  issueCommand: (id: string, commandType: string, parameters?: string) =>
+    request<{ id: string }>(`/api/devices/${id}/commands`, { method: "POST", body: JSON.stringify({ commandType, parameters }) }),
+  setLicenseExpiry: (id: string, expiresAt: string | null) =>
+    request(`/api/devices/${id}/license/expiry`, { method: "PATCH", body: JSON.stringify({ expiresAt }) }),
+  getAlertSettings: () => request<{ diskAlertThresholdPercent: number }>("/api/settings/alerts"),
+  saveAlertSettings: (diskAlertThresholdPercent: number) =>
+    request<{ message: string }>("/api/settings/alerts", { method: "PUT", body: JSON.stringify({ diskAlertThresholdPercent }) }),
+};
+
+// Dashboard
+export const dashboard = {
+  get: () => request<DashboardData>("/api/dashboard"),
+};
+
+// Software inventory
+export const software = {
+  getInventory: (params?: Record<string, string>) => {
+    const qs = params ? "?" + new URLSearchParams(params).toString() : "";
+    return request<SoftwareInventoryItem[]>(`/api/software${qs}`);
+  },
+  getSummary: (name?: string) => {
+    const qs = name ? `?name=${encodeURIComponent(name)}` : "";
+    return request<SoftwareSummaryItem[]>(`/api/software/summary${qs}`);
+  },
+  getBlacklist: () => request<BlacklistEntry[]>("/api/software/blacklist"),
+  addBlacklist: (data: { namePattern: string; publisher?: string; reason?: string }) =>
+    request<{ id: string }>("/api/software/blacklist", { method: "POST", body: JSON.stringify(data) }),
+  deleteBlacklist: (id: string) =>
+    request(`/api/software/blacklist/${id}`, { method: "DELETE" }),
+  getAlerts: (acknowledged?: boolean) => {
+    const qs = acknowledged !== undefined ? `?acknowledged=${acknowledged}` : "";
+    return request<SoftwareAlertItem[]>(`/api/software/alerts${qs}`);
+  },
+  acknowledgeAlert: (id: string) =>
+    request(`/api/software/alerts/${id}/acknowledge`, { method: "POST" }),
+  acknowledgeAll: () =>
+    request<{ acknowledged: number }>("/api/software/alerts/acknowledge-all", { method: "POST" }),
+};
+
+// Audit
+export const audit = {
+  list: (params?: { page?: number; pageSize?: number; username?: string; action?: string; entityType?: string }) => {
+    const qs = params ? "?" + new URLSearchParams(
+      Object.fromEntries(Object.entries(params).filter(([, v]) => v !== undefined).map(([k, v]) => [k, String(v)]))
+    ).toString() : "";
+    return request<AuditLogPage>(`/api/audit${qs}`);
+  },
+};
+
+// Agent versions
+export const agentVersions = {
+  list: () => request<AgentVersion[]>("/api/agent-versions"),
+  create: (data: { version: string; downloadUrl?: string; changelog?: string; isLatest: boolean }) =>
+    request<{ id: string }>("/api/agent-versions", { method: "POST", body: JSON.stringify(data) }),
+  setLatest: (id: string) =>
+    request(`/api/agent-versions/${id}/set-latest`, { method: "PATCH" }),
+  delete: (id: string) =>
+    request(`/api/agent-versions/${id}`, { method: "DELETE" }),
 };
 
 // Customers
@@ -163,6 +231,7 @@ export interface LicenseInfo {
   officeKey: string | null;
   officeVersion: string;
   fetchedAt: string;
+  expiresAt: string | null;
 }
 
 export interface PendingDevice {
@@ -218,4 +287,118 @@ export interface Group {
   color: string | null;
   createdAt: string;
   deviceCount: number;
+}
+
+export interface DeviceNote {
+  id: string;
+  content: string;
+  authorUsername: string;
+  createdAt: string;
+}
+
+export interface DeviceCommand {
+  id: string;
+  commandType: string;
+  status: string;
+  parameters: string | null;
+  issuedByUsername: string;
+  createdAt: string;
+  executedAt: string | null;
+  result: string | null;
+}
+
+export interface BlacklistEntry {
+  id: string;
+  namePattern: string;
+  publisher: string | null;
+  reason: string | null;
+  addedByUsername: string;
+  addedAt: string;
+}
+
+export interface SoftwareAlertItem {
+  id: string;
+  softwareName: string;
+  softwareVersion: string;
+  detectedAt: string;
+  acknowledgedAt: string | null;
+  acknowledgedByUsername: string | null;
+  device: { id: string; hostname: string };
+  customer: { id: string; name: string } | null;
+  rule: { id: string; namePattern: string; reason: string | null };
+}
+
+export interface SoftwareInventoryItem {
+  id: string;
+  name: string;
+  version: string;
+  publisher: string;
+  installDate: string;
+  device: { id: string; hostname: string };
+  customer: { id: string; name: string } | null;
+}
+
+export interface SoftwareSummaryItem {
+  name: string;
+  publisher: string;
+  deviceCount: number;
+  versions: string[];
+}
+
+export interface AuditLogEntry {
+  id: string;
+  username: string;
+  action: string;
+  entityType: string;
+  entityId: string | null;
+  details: string | null;
+  ipAddress: string | null;
+  timestamp: string;
+}
+
+export interface AuditLogPage {
+  total: number;
+  page: number;
+  pageSize: number;
+  items: AuditLogEntry[];
+}
+
+export interface AgentVersion {
+  id: string;
+  version: string;
+  downloadUrl: string | null;
+  changelog: string | null;
+  isLatest: boolean;
+  releasedAt: string;
+}
+
+export interface DashboardData {
+  devices: { total: number; online: number; offline: number; pending: number };
+  customers: number;
+  groups: number;
+  alerts: {
+    softwareAlerts: number;
+    expiringLicenses: number;
+    expiredLicenses: number;
+    pendingCommands: number;
+  };
+  recentAlerts: Array<{
+    id: string;
+    deviceHostname: string;
+    deviceId: string;
+    softwareName: string;
+    softwareVersion: string;
+    detectedAt: string;
+    rule: string;
+  }>;
+  recentAuditLogs: Array<{
+    id: string;
+    username: string;
+    action: string;
+    entityType: string;
+    entityId: string | null;
+    timestamp: string;
+  }>;
+  devicesByGroup: Array<{ id: string; name: string; color: string | null; deviceCount: number }>;
+  devicesByCustomer: Array<{ id: string; name: string; deviceCount: number }>;
 }

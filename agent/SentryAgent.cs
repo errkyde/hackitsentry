@@ -1,7 +1,8 @@
 using Microsoft.Extensions.Options;
+using System.Diagnostics;
+using System.Reflection;
 using System.Runtime.Versioning;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 
 namespace HackITSentry.Agent;
 
@@ -15,10 +16,13 @@ public class SentryAgent : BackgroundService
     private readonly ILogger<SentryAgent> _logger;
     private readonly IConfiguration _fullConfig;
 
-    // File path where we store the registration token and API key
     private readonly string _stateFile = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
         "HackITSentry", "agent-state.json");
+
+    // Current agent version (set at build time via AssemblyInfo or hardcoded here)
+    private static readonly string CurrentVersion =
+        Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.0.0";
 
     public SentryAgent(
         AgentHttpClient http,
@@ -38,9 +42,8 @@ public class SentryAgent : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("HackIT Sentry Agent starting...");
+        _logger.LogInformation("HackIT Sentry Agent starting (v{Version})...", CurrentVersion);
 
-        // If no API key configured, start registration flow
         var apiKey = _config.CurrentValue.ApiKey;
         if (string.IsNullOrEmpty(apiKey))
         {
@@ -76,7 +79,6 @@ public class SentryAgent : BackgroundService
         var state = LoadState();
         if (state == null)
         {
-            // Generate a unique registration token
             var token = Guid.NewGuid().ToString("N");
             var sysInfo = _sysInfo.Collect();
 
@@ -106,7 +108,6 @@ public class SentryAgent : BackgroundService
             _logger.LogInformation("Resuming pending registration, token: {Token}", state.RegistrationToken);
         }
 
-        // Poll for approval
         while (!stoppingToken.IsCancellationRequested)
         {
             await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
@@ -121,8 +122,6 @@ public class SentryAgent : BackgroundService
                 _logger.LogInformation("Device approved! API key received.");
                 state.ApiKey = status.ApiKey;
                 SaveState(state);
-
-                // Write API key to appsettings so it persists across restarts
                 PersistApiKey(status.ApiKey);
                 return status.ApiKey;
             }
@@ -181,7 +180,8 @@ public class SentryAgent : BackgroundService
             return;
         }
 
-        _logger.LogDebug("Check-in successful. LicenseRequested: {LicenseRequested}", response.LicenseRequested);
+        _logger.LogDebug("Check-in successful. LicenseRequested={LicReq}, HasCommands={HasCmds}",
+            response.LicenseRequested, response.HasPendingCommands);
 
         if (response.LicenseRequested)
         {
@@ -196,11 +196,129 @@ public class SentryAgent : BackgroundService
             });
             _logger.LogInformation("License keys submitted.");
         }
+
+        if (response.HasPendingCommands)
+        {
+            await ProcessPendingCommandsAsync();
+        }
+
+        // Check for self-update
+        if (!string.IsNullOrEmpty(response.LatestAgentVersion) &&
+            !string.IsNullOrEmpty(response.AgentDownloadUrl) &&
+            response.LatestAgentVersion != CurrentVersion)
+        {
+            _logger.LogInformation("New agent version available: {New} (current: {Current})",
+                response.LatestAgentVersion, CurrentVersion);
+            await TryAutoUpdateAsync(response.AgentDownloadUrl, response.LatestAgentVersion);
+        }
+    }
+
+    private async Task ProcessPendingCommandsAsync()
+    {
+        var commands = await _http.GetPendingCommandsAsync();
+        if (commands == null || commands.Count == 0) return;
+
+        _logger.LogInformation("Processing {Count} pending command(s).", commands.Count);
+
+        foreach (var cmd in commands)
+        {
+            _logger.LogInformation("Executing command: {Type} (Id={Id})", cmd.CommandType, cmd.Id);
+            (bool success, string? message) = await ExecuteCommandAsync(cmd);
+            await _http.ReportCommandResultAsync(cmd.Id, success, message);
+        }
+    }
+
+    private async Task<(bool success, string? message)> ExecuteCommandAsync(PendingCommandDto cmd)
+    {
+        try
+        {
+            switch (cmd.CommandType)
+            {
+                case "Restart":
+                    _logger.LogInformation("Initiating system restart...");
+                    Process.Start("shutdown", "/r /t 10 /c \"HackIT Sentry: Remote restart\"");
+                    return (true, "Restart initiated (10s delay)");
+
+                case "Shutdown":
+                    _logger.LogInformation("Initiating system shutdown...");
+                    Process.Start("shutdown", "/s /t 10 /c \"HackIT Sentry: Remote shutdown\"");
+                    return (true, "Shutdown initiated (10s delay)");
+
+                case "RunScript":
+                    if (string.IsNullOrWhiteSpace(cmd.Parameters))
+                        return (false, "No script content provided");
+
+                    var tempFile = Path.Combine(Path.GetTempPath(), $"sentry_cmd_{Guid.NewGuid():N}.ps1");
+                    await File.WriteAllTextAsync(tempFile, cmd.Parameters);
+
+                    var psi = new ProcessStartInfo("powershell.exe",
+                        $"-NonInteractive -ExecutionPolicy Bypass -File \"{tempFile}\"")
+                    {
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    };
+
+                    using var proc = Process.Start(psi);
+                    if (proc == null) return (false, "Failed to start process");
+
+                    var output = await proc.StandardOutput.ReadToEndAsync();
+                    var error = await proc.StandardError.ReadToEndAsync();
+                    await proc.WaitForExitAsync();
+
+                    File.Delete(tempFile);
+
+                    var result = (output + error).Trim();
+                    return (proc.ExitCode == 0, result.Length > 500 ? result[..500] : result);
+
+                default:
+                    return (false, $"Unknown command type: {cmd.CommandType}");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Command execution failed: {Type}", cmd.CommandType);
+            return (false, ex.Message);
+        }
+    }
+
+    private async Task TryAutoUpdateAsync(string downloadUrl, string newVersion)
+    {
+        try
+        {
+            _logger.LogInformation("Downloading agent update from {Url}...", downloadUrl);
+
+            var data = await _http.DownloadFileAsync(downloadUrl);
+            if (data == null)
+            {
+                _logger.LogWarning("Failed to download update.");
+                return;
+            }
+
+            var updateDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                "HackITSentry", "updates");
+            Directory.CreateDirectory(updateDir);
+
+            var installerPath = Path.Combine(updateDir, $"SentryAgent-{newVersion}.msi");
+            await File.WriteAllBytesAsync(installerPath, data);
+
+            _logger.LogInformation("Starting installer: {Path}", installerPath);
+            Process.Start(new ProcessStartInfo("msiexec.exe", $"/i \"{installerPath}\" /quiet /norestart")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Auto-update failed");
+        }
     }
 
     private void PersistApiKey(string apiKey)
     {
-        // Update the appsettings.json file with the new API key
         var configPath = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
         try
         {
@@ -231,10 +349,7 @@ public class SentryAgent : BackgroundService
         try
         {
             if (File.Exists(_stateFile))
-            {
-                var json = File.ReadAllText(_stateFile);
-                return JsonSerializer.Deserialize<AgentState>(json);
-            }
+                return JsonSerializer.Deserialize<AgentState>(File.ReadAllText(_stateFile));
         }
         catch { }
         return null;

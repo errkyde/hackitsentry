@@ -16,12 +16,17 @@ public class AppDbContext : DbContext
     public DbSet<DeviceCheckin> DeviceCheckins { get; set; }
     public DbSet<InstalledSoftware> InstalledSoftware { get; set; }
     public DbSet<LicenseInfo> LicenseInfos { get; set; }
+    public DbSet<DeviceNote> DeviceNotes { get; set; }
+    public DbSet<DeviceCommand> DeviceCommands { get; set; }
+    public DbSet<AuditLog> AuditLogs { get; set; }
+    public DbSet<SoftwareBlacklistEntry> SoftwareBlacklist { get; set; }
+    public DbSet<SoftwareAlert> SoftwareAlerts { get; set; }
+    public DbSet<AgentVersion> AgentVersions { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<AppSetting>()
             .HasKey(s => s.Key);
-
 
         modelBuilder.Entity<Device>()
             .HasOne(d => d.Customer)
@@ -53,6 +58,30 @@ public class AppDbContext : DbContext
             .HasForeignKey(s => s.DeviceId)
             .OnDelete(DeleteBehavior.Cascade);
 
+        modelBuilder.Entity<DeviceNote>()
+            .HasOne(n => n.Device)
+            .WithMany(d => d.Notes)
+            .HasForeignKey(n => n.DeviceId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<DeviceCommand>()
+            .HasOne(c => c.Device)
+            .WithMany(d => d.Commands)
+            .HasForeignKey(c => c.DeviceId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<SoftwareAlert>()
+            .HasOne(a => a.Device)
+            .WithMany(d => d.SoftwareAlerts)
+            .HasForeignKey(a => a.DeviceId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<SoftwareAlert>()
+            .HasOne(a => a.BlacklistEntry)
+            .WithMany()
+            .HasForeignKey(a => a.BlacklistEntryId)
+            .OnDelete(DeleteBehavior.Cascade);
+
         modelBuilder.Entity<Device>()
             .HasIndex(d => d.AgentApiKey)
             .IsUnique();
@@ -63,6 +92,10 @@ public class AppDbContext : DbContext
 
         modelBuilder.Entity<User>()
             .HasIndex(u => u.Username)
+            .IsUnique();
+
+        modelBuilder.Entity<AgentVersion>()
+            .HasIndex(v => v.Version)
             .IsUnique();
     }
 }
