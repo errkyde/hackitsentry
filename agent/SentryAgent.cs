@@ -24,6 +24,12 @@ public class SentryAgent : BackgroundService
     private static readonly string CurrentVersion =
         Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.0.0";
 
+    // Used to cancel the inter-checkin delay for immediate re-checkin
+    private CancellationTokenSource _forceCheckinCts = new();
+
+    // Runtime override for check-in interval (received from server, overrides appsettings)
+    private int? _checkinIntervalOverride;
+
     public SentryAgent(
         AgentHttpClient http,
         SystemInfoCollector sysInfo,
@@ -44,7 +50,10 @@ public class SentryAgent : BackgroundService
     {
         _logger.LogInformation("HackIT Sentry Agent starting (v{Version})...", CurrentVersion);
 
-        var apiKey = _config.CurrentValue.ApiKey;
+        CleanupLegacyState();
+
+        var apiKey = SecureStore.LoadApiKey();
+
         if (string.IsNullOrEmpty(apiKey))
         {
             apiKey = await RegisterAndWaitForApproval(stoppingToken);
@@ -57,6 +66,9 @@ public class SentryAgent : BackgroundService
 
         _logger.LogInformation("Agent registered and approved. Starting check-in loop.");
 
+        // Separate lightweight loop: poll for commands every 30 seconds
+        _ = Task.Run(() => CommandPollLoopAsync(stoppingToken), stoppingToken);
+
         while (!stoppingToken.IsCancellationRequested)
         {
             try
@@ -68,9 +80,53 @@ public class SentryAgent : BackgroundService
                 _logger.LogError(ex, "Error during check-in");
             }
 
-            var interval = TimeSpan.FromMinutes(_config.CurrentValue.CheckinIntervalMinutes);
+            // If the API key was cleared by a 401 response, stop here.
+            // Windows service recovery will restart us and the agent will re-register.
+            if (string.IsNullOrEmpty(SecureStore.LoadApiKey()))
+            {
+                _logger.LogWarning("API key was invalidated by the server. Stopping for re-registration on restart...");
+                DeleteStateFile();
+                return;
+            }
+
+            var interval = TimeSpan.FromMinutes(_checkinIntervalOverride ?? _config.CurrentValue.CheckinIntervalMinutes);
             _logger.LogDebug("Next check-in in {Minutes} minutes", interval.TotalMinutes);
-            await Task.Delay(interval, stoppingToken);
+
+            try
+            {
+                using var linked = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, _forceCheckinCts.Token);
+                await Task.Delay(interval, linked.Token);
+            }
+            catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
+            {
+                // ForceCheckin was requested — reset CTS and continue immediately
+                _forceCheckinCts = new CancellationTokenSource();
+                _logger.LogInformation("Force check-in triggered — skipping delay.");
+            }
+        }
+    }
+
+    private async Task CommandPollLoopAsync(CancellationToken stoppingToken)
+    {
+        // Brief initial delay so the first full check-in completes first
+        await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken).ConfigureAwait(false);
+
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            // Check for commands queued while we were reconnecting (handles missed notifications)
+            try { await ProcessPendingCommandsAsync(); }
+            catch (Exception ex) { _logger.LogError(ex, "Error processing commands"); }
+
+            if (stoppingToken.IsCancellationRequested) break;
+
+            // Block until the server signals a new command (or 29s timeout)
+            await _http.WaitForCommandAsync(stoppingToken).ConfigureAwait(false);
+
+            if (stoppingToken.IsCancellationRequested) break;
+
+            // Execute whatever was signalled
+            try { await ProcessPendingCommandsAsync(); }
+            catch (Exception ex) { _logger.LogError(ex, "Error processing commands after long-poll"); }
         }
     }
 
@@ -90,7 +146,8 @@ public class SentryAgent : BackgroundService
                 hostname = sysInfo.Hostname,
                 windowsVersion = sysInfo.WindowsVersion,
                 cpuModel = sysInfo.CpuModel,
-                ramTotalGB = sysInfo.RamTotalGB
+                ramTotalGB = sysInfo.RamTotalGB,
+                installToken = _config.CurrentValue.InstallToken
             });
 
             if (response == null)
@@ -108,29 +165,38 @@ public class SentryAgent : BackgroundService
             _logger.LogInformation("Resuming pending registration, token: {Token}", state.RegistrationToken);
         }
 
+        // Check immediately on (re)start — no initial delay
         while (!stoppingToken.IsCancellationRequested)
         {
-            await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
-
             var status = await _http.GetRegistrationStatusAsync(state.RegistrationToken);
-            if (status == null) continue;
 
-            _logger.LogDebug("Registration status: {Status}", status.Status);
-
-            if (status.Status == "Approved" && !string.IsNullOrEmpty(status.ApiKey))
+            if (status != null)
             {
-                _logger.LogInformation("Device approved! API key received.");
-                state.ApiKey = status.ApiKey;
-                SaveState(state);
-                PersistApiKey(status.ApiKey);
-                return status.ApiKey;
+                _logger.LogDebug("Registration status: {Status}", status.Status);
+
+                if (status.Status == "Approved" && !string.IsNullOrEmpty(status.ApiKey))
+                {
+                    _logger.LogInformation("Device approved! API key received.");
+                    PersistApiKey(status.ApiKey);
+                    return status.ApiKey;
+                }
+
+                if (status.Status == "Rejected")
+                {
+                    _logger.LogWarning("Registration was rejected by admin. Uninstalling agent...");
+                    _ = Task.Run(() => UninstallSelf());
+                    return null;
+                }
+
+                if (status.Status == "NotFound")
+                {
+                    _logger.LogWarning("Registration token no longer exists on server. Clearing state and re-registering...");
+                    DeleteStateFile();
+                    return null;
+                }
             }
 
-            if (status.Status == "Rejected")
-            {
-                _logger.LogWarning("Registration was rejected by admin.");
-                return null;
-            }
+            await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
         }
 
         return null;
@@ -140,6 +206,7 @@ public class SentryAgent : BackgroundService
     {
         _logger.LogDebug("Performing check-in...");
         var info = _sysInfo.Collect();
+        var state = LoadState() ?? new AgentState();
 
         var payload = new
         {
@@ -156,7 +223,13 @@ public class SentryAgent : BackgroundService
             {
                 name = n.Name,
                 ipAddress = n.IpAddress,
-                macAddress = n.MacAddress
+                macAddress = n.MacAddress,
+                ipv6Address = n.Ipv6Address,
+                subnetMask = n.SubnetMask,
+                gateway = n.Gateway,
+                dnsServers = n.DnsServers,
+                speedMbps = n.SpeedMbps,
+                adapterType = n.AdapterType
             }),
             diskDrives = info.DiskDrives.Select(d => new
             {
@@ -170,7 +243,8 @@ public class SentryAgent : BackgroundService
                 version = s.Version,
                 publisher = s.Publisher,
                 installDate = s.InstallDate
-            })
+            }),
+            rustDeskId = info.RustDeskId
         };
 
         var response = await _http.CheckinAsync(payload);
@@ -182,6 +256,9 @@ public class SentryAgent : BackgroundService
 
         _logger.LogDebug("Check-in successful. LicenseRequested={LicReq}, HasCommands={HasCmds}",
             response.LicenseRequested, response.HasPendingCommands);
+
+        if (response.CheckinIntervalMinutes.HasValue && response.CheckinIntervalMinutes.Value > 0)
+            _checkinIntervalOverride = response.CheckinIntervalMinutes.Value;
 
         if (response.LicenseRequested)
         {
@@ -200,6 +277,33 @@ public class SentryAgent : BackgroundService
         if (response.HasPendingCommands)
         {
             await ProcessPendingCommandsAsync();
+        }
+
+        // Auto-install RustDesk if requested and not yet present
+        if (response.RustDeskAutoInstall && !string.IsNullOrEmpty(response.RustDeskDownloadUrl))
+        {
+            if (!IsRustDeskInstalled())
+            {
+                _logger.LogInformation("RustDesk not found — starting silent installation...");
+                await InstallRustDeskAsync(response.RustDeskDownloadUrl);
+            }
+        }
+
+        // Configure RustDesk relay + public key whenever settings changed or not yet done
+        if (!string.IsNullOrEmpty(response.RustDeskRelayServer))
+        {
+            var configKey = $"{response.RustDeskRelayServer}|{response.RustDeskPublicKey}";
+            if (!string.IsNullOrEmpty(info.RustDeskId) && state.RustDeskConfiguredFor != configKey)
+            {
+                ConfigureRustDesk(response.RustDeskRelayServer, response.RustDeskPublicKey ?? "");
+                state.RustDeskConfiguredFor = configKey;
+                SaveState(state);
+                _logger.LogInformation("RustDesk relay/key configured.");
+            }
+            else if (string.IsNullOrEmpty(info.RustDeskId))
+            {
+                _logger.LogDebug("RustDesk not installed yet — will retry at next check-in.");
+            }
         }
 
         // Check for self-update
@@ -245,6 +349,7 @@ public class SentryAgent : BackgroundService
                     return (true, "Shutdown initiated (10s delay)");
 
                 case "RunScript":
+                {
                     if (string.IsNullOrWhiteSpace(cmd.Parameters))
                         return (false, "No script content provided");
 
@@ -271,6 +376,47 @@ public class SentryAgent : BackgroundService
 
                     var result = (output + error).Trim();
                     return (proc.ExitCode == 0, result.Length > 500 ? result[..500] : result);
+                }
+
+                case "ForceCheckin":
+                    _logger.LogInformation("Force check-in requested.");
+                    _forceCheckinCts.Cancel();
+                    return (true, "Check-in triggered");
+
+                case "CollectLicense":
+                {
+                    _logger.LogInformation("License key collection requested.");
+                    var licenseData = _licenseCollector.Collect();
+                    await _http.SubmitLicenseKeyAsync(new
+                    {
+                        windowsKey = licenseData.WindowsKey,
+                        licenseType = licenseData.LicenseType,
+                        officeKey = licenseData.OfficeKey,
+                        officeVersion = licenseData.OfficeVersion
+                    });
+                    return (true, "License keys collected and submitted.");
+                }
+
+                case "Uninstall":
+                    _ = Task.Run(() => UninstallSelf());
+                    return (true, "Uninstall initiated");
+
+                case "UpdateServerUrl":
+                {
+                    if (string.IsNullOrWhiteSpace(cmd.Parameters))
+                        return (false, "No URL provided");
+
+                    var newUrl = cmd.Parameters.Trim();
+                    _logger.LogInformation("Updating server URL to: {Url}", newUrl);
+
+                    // Persist encrypted + update plaintext config as fallback
+                    SecureStore.SaveServerUrl(newUrl);
+                    UpdateServerUrlInConfig(newUrl);
+
+                    // Restart service via a delayed batch script (same pattern as uninstall)
+                    _ = Task.Run(() => RestartService());
+                    return (true, $"Server URL updated to {newUrl}. Restarting...");
+                }
 
                 default:
                     return (false, $"Unknown command type: {cmd.CommandType}");
@@ -280,6 +426,50 @@ public class SentryAgent : BackgroundService
         {
             _logger.LogError(ex, "Command execution failed: {Type}", cmd.CommandType);
             return (false, ex.Message);
+        }
+    }
+
+    private async void UninstallSelf()
+    {
+        try
+        {
+            _logger.LogInformation("Uninstalling HackIT Sentry Agent...");
+
+            // Notify server to delete device record
+            await _http.UninstallAsync();
+            SecureStore.Delete();
+
+            // Small delay so the command result can be reported first
+            await Task.Delay(3000);
+
+            var installDir = AppContext.BaseDirectory;
+            var dataDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                "HackITSentry");
+
+            // Build self-deleting batch script
+            var bat = Path.Combine(Path.GetTempPath(), "hackit_uninstall.bat");
+            File.WriteAllText(bat,
+                "@echo off\r\n" +
+                "ping -n 4 127.0.0.1 > nul\r\n" +
+                "sc stop HackITSentryAgent > nul 2>&1\r\n" +
+                "ping -n 3 127.0.0.1 > nul\r\n" +
+                "sc delete HackITSentryAgent > nul 2>&1\r\n" +
+                $"rd /s /q \"{installDir}\" > nul 2>&1\r\n" +
+                $"rd /s /q \"{dataDir}\" > nul 2>&1\r\n" +
+                "del /f /q \"%~f0\"\r\n");
+
+            Process.Start(new ProcessStartInfo("cmd.exe", $"/c \"{bat}\"")
+            {
+                CreateNoWindow = true,
+                UseShellExecute = false
+            });
+
+            Environment.Exit(0);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Uninstall failed");
         }
     }
 
@@ -319,28 +509,202 @@ public class SentryAgent : BackgroundService
 
     private void PersistApiKey(string apiKey)
     {
+        try
+        {
+            SecureStore.SaveApiKey(apiKey);
+            _logger.LogInformation("API key saved to encrypted store.");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not save API key to encrypted store");
+        }
+    }
+
+    private void CleanupLegacyState()
+    {
+        // If there's a stale registration token but no API key, clear it so we re-register fresh.
+        // This happens when the server DB was reset or the token expired/was deleted.
+        if (File.Exists(_stateFile) && string.IsNullOrEmpty(SecureStore.LoadApiKey()))
+        {
+            try
+            {
+                var state = LoadState();
+                // Only clear if the state file is older than 1 hour (not a just-created registration)
+                if (state != null && new FileInfo(_stateFile).LastWriteTimeUtc < DateTime.UtcNow.AddHours(-1))
+                {
+                    _logger.LogWarning("Stale registration state detected (no API key, >1h old). Clearing for fresh registration.");
+                    DeleteStateFile();
+                }
+            }
+            catch { }
+        }
+
+        // Remove files from the old PowerShell installer path ("HackIT Sentry" with space)
+        var legacyDataDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+            "HackIT Sentry");
+        if (Directory.Exists(legacyDataDir))
+        {
+            try
+            {
+                Directory.Delete(legacyDataDir, recursive: true);
+                _logger.LogInformation("Removed legacy data directory: {Dir}", legacyDataDir);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Could not remove legacy directory {Dir}", legacyDataDir);
+            }
+        }
+    }
+
+    private void DeleteStateFile()
+    {
+        try { if (File.Exists(_stateFile)) File.Delete(_stateFile); }
+        catch (Exception ex) { _logger.LogWarning(ex, "Could not delete state file"); }
+    }
+
+    private void UpdateServerUrlInConfig(string newUrl)
+    {
         var configPath = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
         try
         {
-            var json = File.Exists(configPath) ? File.ReadAllText(configPath) : "{}";
+            if (!File.Exists(configPath)) return;
+            var json = File.ReadAllText(configPath);
             var doc = JsonDocument.Parse(json);
             var root = doc.RootElement.Deserialize<Dictionary<string, JsonElement>>() ?? [];
 
-            var sentryAgent = new Dictionary<string, object>();
-            if (root.TryGetValue("SentryAgent", out var existing))
-            {
-                var existingDict = existing.Deserialize<Dictionary<string, object>>() ?? [];
-                foreach (var kv in existingDict) sentryAgent[kv.Key] = kv.Value;
-            }
-            sentryAgent["ApiKey"] = apiKey;
+            if (!root.TryGetValue("SentryAgent", out var section)) return;
+            var sentryAgent = section.Deserialize<Dictionary<string, object>>() ?? [];
+            sentryAgent["ServerUrl"] = newUrl;
             root["SentryAgent"] = JsonSerializer.SerializeToElement(sentryAgent);
-
             File.WriteAllText(configPath, JsonSerializer.Serialize(root,
                 new JsonSerializerOptions { WriteIndented = true }));
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Could not persist API key to config file");
+            _logger.LogWarning(ex, "Could not update ServerUrl in config file");
+        }
+    }
+
+    private void RestartService()
+    {
+        try
+        {
+            var bat = Path.Combine(Path.GetTempPath(), "hackit_restart.bat");
+            File.WriteAllText(bat,
+                "@echo off\r\n" +
+                "ping -n 4 127.0.0.1 > nul\r\n" +
+                "sc stop HackITSentryAgent > nul 2>&1\r\n" +
+                "ping -n 3 127.0.0.1 > nul\r\n" +
+                "sc start HackITSentryAgent > nul 2>&1\r\n" +
+                "del /f /q \"%~f0\"\r\n");
+
+            Process.Start(new ProcessStartInfo("cmd.exe", $"/c \"{bat}\"")
+            {
+                CreateNoWindow = true,
+                UseShellExecute = false
+            });
+
+            Environment.Exit(0);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Service restart failed");
+        }
+    }
+
+    private static readonly string[] RustDeskTomlPaths =
+    [
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "RustDesk", "config", "RustDesk.toml"),
+        @"C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config\RustDesk.toml",
+        @"C:\Windows\ServiceProfiles\NetworkService\AppData\Roaming\RustDesk\config\RustDesk.toml",
+        @"C:\Windows\system32\config\systemprofile\AppData\Roaming\RustDesk\config\RustDesk.toml",
+    ];
+
+    private static bool IsRustDeskInstalled()
+    {
+        var exePaths = new[]
+        {
+            @"C:\Program Files\RustDesk\RustDesk.exe",
+            @"C:\Program Files (x86)\RustDesk\RustDesk.exe",
+        };
+        return exePaths.Any(File.Exists);
+    }
+
+    private async Task InstallRustDeskAsync(string downloadUrl)
+    {
+        var tempPath = Path.Combine(Path.GetTempPath(), "rustdesk-installer.exe");
+        try
+        {
+            _logger.LogInformation("Downloading RustDesk from {Url}", downloadUrl);
+            using var http = new System.Net.Http.HttpClient();
+            http.Timeout = TimeSpan.FromMinutes(5);
+            var bytes = await http.GetByteArrayAsync(downloadUrl);
+            await File.WriteAllBytesAsync(tempPath, bytes);
+
+            _logger.LogInformation("Running RustDesk silent installer...");
+            var proc = Process.Start(new ProcessStartInfo
+            {
+                FileName = tempPath,
+                Arguments = "--silent-install",
+                UseShellExecute = true,
+            });
+            proc?.WaitForExit(120_000);
+            _logger.LogInformation("RustDesk installation finished (exit code: {Code})", proc?.ExitCode);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "RustDesk auto-install failed");
+        }
+        finally
+        {
+            try { File.Delete(tempPath); } catch { }
+        }
+    }
+
+    private void ConfigureRustDesk(string host, string publicKey)
+    {
+        foreach (var path in RustDeskTomlPaths)
+        {
+            try
+            {
+                if (!File.Exists(path)) continue;
+                var lines = File.ReadAllLines(path).ToList();
+                bool relaySet = false, rendezvousSet = false, keySet = false;
+
+                for (int i = 0; i < lines.Count; i++)
+                {
+                    var trimmed = lines[i].TrimStart();
+                    if (trimmed.StartsWith("relay-server"))
+                    {
+                        lines[i] = $"relay-server = \"{host}\"";
+                        relaySet = true;
+                    }
+                    else if (trimmed.StartsWith("rendezvous_server"))
+                    {
+                        lines[i] = $"rendezvous_server = \"{host}\"";
+                        rendezvousSet = true;
+                    }
+                    else if (trimmed.StartsWith("key") && !string.IsNullOrEmpty(publicKey))
+                    {
+                        lines[i] = $"key = \"{publicKey}\"";
+                        keySet = true;
+                    }
+                }
+
+                if (!relaySet) lines.Add($"relay-server = \"{host}\"");
+                if (!rendezvousSet) lines.Add($"rendezvous_server = \"{host}\"");
+                if (!keySet && !string.IsNullOrEmpty(publicKey)) lines.Add($"key = \"{publicKey}\"");
+
+                File.WriteAllLines(path, lines);
+                _logger.LogInformation("Configured RustDesk (relay={Host}, key={HasKey})", host, !string.IsNullOrEmpty(publicKey));
+                return;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not configure RustDesk at {Path}", path);
+            }
         }
     }
 
@@ -372,5 +736,7 @@ public class SentryAgent : BackgroundService
 public class AgentState
 {
     public string RegistrationToken { get; set; } = "";
-    public string? ApiKey { get; set; }
+    /// <summary>Stores "relay|key" that was last written to RustDesk.toml, so we reconfigure when settings change.</summary>
+    public string RustDeskConfiguredFor { get; set; } = "";
+    // ApiKey is NOT stored here — it lives in the DPAPI-encrypted SecureStore
 }

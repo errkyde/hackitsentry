@@ -2,12 +2,12 @@ import { useEffect, useState } from "react";
 import {
   KeyRound, UserPlus, Trash2, RefreshCw, Mail, Send, CheckCircle2, XCircle,
   ShieldAlert, Plus, Clock, Download, ChevronLeft, ChevronRight, AlertTriangle,
-  Tag
+  Tag, Monitor
 } from "lucide-react";
 import {
   auth, users, settings, software, audit, agentVersions, devices as devicesApi,
   type AppUser, type EmailSettingsInput, type BlacklistEntry,
-  type AuditLogEntry, type AgentVersion
+  type AuditLogEntry, type AgentVersion, type RustDeskSettings
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,6 +20,7 @@ import { Badge } from "@/components/ui/badge";
 
 export function Settings() {
   const currentUsername = localStorage.getItem("username") ?? "admin";
+  const isAdmin = localStorage.getItem("role") === "Admin";
 
   // --- Change password ---
   const [pwCurrent, setPwCurrent] = useState("");
@@ -52,6 +53,7 @@ export function Settings() {
   const [createDialog, setCreateDialog] = useState(false);
   const [newUsername, setNewUsername] = useState("");
   const [newPassword, setNewPassword] = useState("");
+  const [newRole, setNewRole] = useState("User");
   const [createError, setCreateError] = useState("");
   const [createLoading, setCreateLoading] = useState(false);
   const [resetDialog, setResetDialog] = useState<AppUser | null>(null);
@@ -69,9 +71,20 @@ export function Settings() {
   const [testLoading, setTestLoading] = useState(false);
   const [testMsg, setTestMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
+  // --- Checkin interval ---
+  const [checkinInterval, setCheckinInterval] = useState(30);
+  const [checkinSaveMsg, setCheckinSaveMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
   // --- Alert settings ---
   const [diskThreshold, setDiskThreshold] = useState(10);
   const [alertSaveMsg, setAlertSaveMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  // --- RustDesk settings ---
+  const [rustDesk, setRustDesk] = useState<RustDeskSettings>({
+    relayHost: "", publicKey: "", autoInstall: false, downloadUrl: "",
+  });
+  const [rustDeskSaveMsg, setRustDeskSaveMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [rustDeskLoading, setRustDeskLoading] = useState(false);
 
   // --- Software Blacklist ---
   const [blacklist, setBlacklist] = useState<BlacklistEntry[]>([]);
@@ -112,6 +125,8 @@ export function Settings() {
     agentVersions.list().then(setAgentVers).catch(() => {});
 
     devicesApi.getAlertSettings().then(s => setDiskThreshold(s.diskAlertThresholdPercent)).catch(() => {});
+    settings.get().then(s => setCheckinInterval(s.checkinIntervalMinutes)).catch(() => {});
+    settings.getRustDesk().then(setRustDesk).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -149,6 +164,16 @@ export function Settings() {
     }
   };
 
+  const handleSaveCheckin = async () => {
+    setCheckinSaveMsg(null);
+    try {
+      const res = await settings.saveCheckin(checkinInterval);
+      setCheckinSaveMsg({ ok: true, text: res.message });
+    } catch (err: any) {
+      setCheckinSaveMsg({ ok: false, text: err.message || "Fehler" });
+    }
+  };
+
   const handleSaveAlerts = async () => {
     setAlertSaveMsg(null);
     try {
@@ -156,6 +181,19 @@ export function Settings() {
       setAlertSaveMsg({ ok: true, text: res.message });
     } catch (err: any) {
       setAlertSaveMsg({ ok: false, text: err.message || "Fehler" });
+    }
+  };
+
+  const handleSaveRustDesk = async () => {
+    setRustDeskSaveMsg(null);
+    setRustDeskLoading(true);
+    try {
+      const res = await settings.saveRustDesk(rustDesk);
+      setRustDeskSaveMsg({ ok: true, text: res.message });
+    } catch (err: any) {
+      setRustDeskSaveMsg({ ok: false, text: err.message || "Fehler" });
+    } finally {
+      setRustDeskLoading(false);
     }
   };
 
@@ -168,9 +206,9 @@ export function Settings() {
     setCreateError("");
     setCreateLoading(true);
     try {
-      await users.create({ username: newUsername, password: newPassword });
+      await users.create({ username: newUsername, password: newPassword, role: newRole });
       setCreateDialog(false);
-      setNewUsername(""); setNewPassword("");
+      setNewUsername(""); setNewPassword(""); setNewRole("User");
       await fetchUsers();
     } catch (err: any) {
       setCreateError(err.message || "Fehler");
@@ -282,6 +320,13 @@ export function Settings() {
         </CardContent>
       </Card>
 
+      {!isAdmin && (
+        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-600 dark:text-amber-400">
+          Du hast nur eingeschränkten Zugriff. Konfigurationseinstellungen sind nur für Administratoren sichtbar.
+        </div>
+      )}
+
+      {isAdmin && (<>
       {/* Email alerting */}
       <Card>
         <CardHeader>
@@ -387,6 +432,115 @@ export function Settings() {
           )}
         </CardContent>
       </Card>
+
+      {/* Checkin interval */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Clock className="h-4 w-4" />
+            Check-in-Intervall
+          </CardTitle>
+          <CardDescription>
+            Wie oft der Agent den Server kontaktiert. Ändert sich beim nächsten Check-in der Agents automatisch.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-end gap-3">
+            <div className="space-y-1.5 flex-1">
+              <Label>Intervall</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  type="number"
+                  min={1}
+                  max={1440}
+                  value={checkinInterval}
+                  onChange={e => setCheckinInterval(Number(e.target.value))}
+                  className="w-24"
+                />
+                <span className="text-sm text-muted-foreground">Minuten</span>
+              </div>
+            </div>
+            <Button onClick={handleSaveCheckin}>Speichern</Button>
+          </div>
+          {checkinSaveMsg && (
+            <div className={`flex items-center gap-2 text-sm ${checkinSaveMsg.ok ? "text-emerald-500" : "text-destructive"}`}>
+              {checkinSaveMsg.ok ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
+              {checkinSaveMsg.text}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* RustDesk */}
+      {isAdmin && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Monitor className="h-4 w-4" />
+              RustDesk (Fernzugriff)
+            </CardTitle>
+            <CardDescription>
+              Self-hosted RustDesk-Relay konfigurieren. Agents konfigurieren sich beim nächsten Check-in automatisch.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <Label>Relay-Host</Label>
+                <Input
+                  placeholder="z.B. sentry.example.com"
+                  value={rustDesk.relayHost}
+                  onChange={e => setRustDesk(r => ({ ...r, relayHost: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Download-URL (Installer)</Label>
+                <Input
+                  placeholder="https://…/rustdesk-1.x.x.exe"
+                  value={rustDesk.downloadUrl}
+                  onChange={e => setRustDesk(r => ({ ...r, downloadUrl: e.target.value }))}
+                />
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Öffentlicher Schlüssel (Public Key)</Label>
+              <Input
+                placeholder="Base64-kodierter Ed25519-Key aus id_ed25519.pub"
+                value={rustDesk.publicKey}
+                onChange={e => setRustDesk(r => ({ ...r, publicKey: e.target.value }))}
+                className="font-mono text-xs"
+              />
+              <p className="text-xs text-muted-foreground">
+                Aus dem Server-Container auslesen:{" "}
+                <code className="bg-muted px-1 rounded">docker exec &lt;rustdesk-hbbs&gt; cat /root/id_ed25519.pub</code>
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                id="rd-autoinstall"
+                type="checkbox"
+                checked={rustDesk.autoInstall}
+                onChange={e => setRustDesk(r => ({ ...r, autoInstall: e.target.checked }))}
+                className="h-4 w-4 rounded border-border accent-primary"
+              />
+              <Label htmlFor="rd-autoinstall" className="font-normal cursor-pointer">
+                Automatisch installieren — Agent installiert RustDesk, wenn noch nicht vorhanden (erfordert Download-URL)
+              </Label>
+            </div>
+            <div className="flex items-center gap-3">
+              <Button onClick={handleSaveRustDesk} disabled={rustDeskLoading}>
+                {rustDeskLoading ? "Wird gespeichert..." : "Speichern"}
+              </Button>
+              {rustDeskSaveMsg && (
+                <div className={`flex items-center gap-2 text-sm ${rustDeskSaveMsg.ok ? "text-emerald-500" : "text-destructive"}`}>
+                  {rustDeskSaveMsg.ok ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
+                  {rustDeskSaveMsg.text}
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Software Blacklist */}
       <Card>
@@ -518,7 +672,7 @@ export function Settings() {
               <CardTitle className="text-base">Benutzer</CardTitle>
               <CardDescription>Admin-Accounts verwalten.</CardDescription>
             </div>
-            <Button size="sm" onClick={() => { setNewUsername(""); setNewPassword(""); setCreateError(""); setCreateDialog(true); }}>
+            <Button size="sm" onClick={() => { setNewUsername(""); setNewPassword(""); setNewRole("User"); setCreateError(""); setCreateDialog(true); }}>
               <UserPlus className="h-3.5 w-3.5 mr-1.5" />
               Neuer Benutzer
             </Button>
@@ -530,6 +684,7 @@ export function Settings() {
               <thead>
                 <tr className="border-b border-border bg-muted/30">
                   <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Benutzername</th>
+                  <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Rolle</th>
                   <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Erstellt</th>
                   <th className="w-24"></th>
                 </tr>
@@ -542,6 +697,15 @@ export function Settings() {
                       {user.username === currentUsername && (
                         <span className="ml-2 text-xs text-muted-foreground">(du)</span>
                       )}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                        user.role === "Admin"
+                          ? "bg-primary/10 text-primary"
+                          : "bg-muted text-muted-foreground"
+                      }`}>
+                        {user.role === "Admin" ? "Admin" : "Benutzer"}
+                      </span>
                     </td>
                     <td className="px-4 py-2.5 text-muted-foreground text-xs">
                       {new Date(user.createdAt).toLocaleDateString("de-DE")}
@@ -628,6 +792,7 @@ export function Settings() {
           )}
         </CardContent>
       </Card>
+      </>)}
 
       {/* Dialogs */}
       <Dialog open={createDialog} onOpenChange={setCreateDialog}>
@@ -641,6 +806,24 @@ export function Settings() {
             <div className="space-y-1.5">
               <Label>Passwort</Label>
               <Input type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Rolle</Label>
+              <div className="flex gap-4">
+                {(["User", "Admin"] as const).map(r => (
+                  <label key={r} className="flex items-center gap-2 cursor-pointer text-sm">
+                    <input
+                      type="radio"
+                      name="role"
+                      value={r}
+                      checked={newRole === r}
+                      onChange={() => setNewRole(r)}
+                      className="h-4 w-4"
+                    />
+                    <span>{r === "Admin" ? "Administrator" : "Benutzer (nur lesen)"}</span>
+                  </label>
+                ))}
+              </div>
             </div>
             {createError && <p className="text-sm text-destructive">{createError}</p>}
           </div>

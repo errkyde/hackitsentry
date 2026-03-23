@@ -14,14 +14,18 @@ public class AgentController : ControllerBase
     private readonly AppDbContext _db;
     private readonly LicenseEncryptionService _encryption;
     private readonly IConfiguration _config;
+    private readonly RuntimeSettings _runtimeSettings;
     private readonly AlertEmailService _email;
+    private readonly AgentCommandNotifier _notifier;
 
-    public AgentController(AppDbContext db, LicenseEncryptionService encryption, IConfiguration config, AlertEmailService email)
+    public AgentController(AppDbContext db, LicenseEncryptionService encryption, IConfiguration config, RuntimeSettings runtimeSettings, AlertEmailService email, AgentCommandNotifier notifier)
     {
         _db = db;
         _encryption = encryption;
         _config = config;
+        _runtimeSettings = runtimeSettings;
         _email = email;
+        _notifier = notifier;
     }
 
     // POST /api/agent/register
@@ -34,13 +38,22 @@ public class AgentController : ControllerBase
         if (existing != null)
             return Ok(new { status = existing.Status.ToString(), id = existing.Id });
 
+        string? invitedBy = null;
+        if (!string.IsNullOrEmpty(request.InstallToken))
+        {
+            var installToken = await _db.InstallTokens
+                .FirstOrDefaultAsync(t => t.Token == request.InstallToken && t.ExpiresAt > DateTime.UtcNow);
+            invitedBy = installToken?.CreatedByUsername;
+        }
+
         var pending = new PendingDevice
         {
             RegistrationToken = request.RegistrationToken,
             Hostname = request.Hostname,
             WindowsVersion = request.WindowsVersion,
             CpuModel = request.CpuModel,
-            RamTotalGB = request.RamTotalGB
+            RamTotalGB = request.RamTotalGB,
+            InvitedByUsername = invitedBy
         };
 
         _db.PendingDevices.Add(pending);
@@ -82,6 +95,8 @@ public class AgentController : ControllerBase
         if (device == null)
             return Unauthorized(new { message = "Invalid API key" });
 
+        var camelCase = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+
         device.Hostname = request.Hostname;
         device.WindowsVersion = request.WindowsVersion;
         device.WindowsBuild = request.WindowsBuild;
@@ -90,14 +105,16 @@ public class AgentController : ControllerBase
         device.CpuModel = request.CpuModel;
         device.CpuCores = request.CpuCores;
         device.RamTotalGB = request.RamTotalGB;
-        device.NetworkAdaptersJson = JsonSerializer.Serialize(request.NetworkAdapters);
+        device.NetworkAdaptersJson = JsonSerializer.Serialize(request.NetworkAdapters, camelCase);
         device.LastSeenAt = DateTime.UtcNow;
+        if (!string.IsNullOrEmpty(request.RustDeskId))
+            device.RustDeskId = request.RustDeskId;
 
         _db.DeviceCheckins.Add(new DeviceCheckin
         {
             DeviceId = device.Id,
             RamUsedGB = request.RamUsedGB,
-            DiskDrivesJson = JsonSerializer.Serialize(request.DiskDrives)
+            DiskDrivesJson = JsonSerializer.Serialize(request.DiskDrives, camelCase)
         });
 
         // Upsert installed software
@@ -139,7 +156,12 @@ public class AgentController : ControllerBase
             licenseRequested = device.LicenseRequested,
             hasPendingCommands,
             latestAgentVersion = latestVersion?.Version,
-            agentDownloadUrl = latestVersion?.DownloadUrl
+            agentDownloadUrl = latestVersion?.DownloadUrl,
+            rustDeskRelayServer = _runtimeSettings.RustDeskRelayHost,
+            rustDeskPublicKey = _runtimeSettings.RustDeskPublicKey,
+            rustDeskAutoInstall = _runtimeSettings.RustDeskAutoInstall,
+            rustDeskDownloadUrl = _runtimeSettings.RustDeskDownloadUrl,
+            checkinIntervalMinutes = _runtimeSettings.CheckinIntervalMinutes
         });
     }
 
@@ -175,6 +197,21 @@ public class AgentController : ControllerBase
         return Ok();
     }
 
+    // GET /api/agent/commands/wait  — long poll, blocks up to 29 s
+    [HttpGet("commands/wait")]
+    public async Task<IActionResult> WaitForCommand(CancellationToken ct)
+    {
+        var device = await GetDeviceByApiKey();
+        if (device == null)
+            return Unauthorized(new { message = "Invalid API key" });
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(29));
+        using var linked  = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
+
+        await _notifier.WaitAsync(device.Id, linked.Token);
+        return NoContent(); // 204 — agent fetches commands immediately after
+    }
+
     // GET /api/agent/commands/pending
     [HttpGet("commands/pending")]
     public async Task<IActionResult> GetPendingCommands()
@@ -204,6 +241,20 @@ public class AgentController : ControllerBase
         }
 
         return Ok(commands);
+    }
+
+    // POST /api/agent/uninstall
+    [HttpPost("uninstall")]
+    public async Task<IActionResult> Uninstall()
+    {
+        var device = await GetDeviceByApiKey();
+        if (device == null)
+            return Unauthorized(new { message = "Invalid API key" });
+
+        _db.Devices.Remove(device);
+        await _db.SaveChangesAsync();
+
+        return Ok();
     }
 
     // POST /api/agent/commands/{id}/result
@@ -243,15 +294,26 @@ public class AgentController : ControllerBase
 
             if (criticalDrives.Count > 0)
             {
-                var lines = criticalDrives.Select(d =>
-                    $"  • Drive {d.Drive}: {d.FreeGB:F1} GB free of {d.TotalGB:F1} GB " +
-                    $"({d.FreeGB / d.TotalGB * 100:F1}% free)");
+                var rows = criticalDrives.Select(d =>
+                {
+                    var pct = d.FreeGB / d.TotalGB * 100;
+                    var barColor = pct < 5 ? "#dc2626" : "#ea580c";
+                    var bar = $"<div style=\"margin-top:6px;height:6px;border-radius:3px;background:#f4f4f5;\">" +
+                              $"<div style=\"width:{100 - pct:F0}%;height:6px;border-radius:3px;background:{barColor};\"></div></div>";
+                    return (
+                        $"Laufwerk {d.Drive}",
+                        (string?)($"{d.FreeGB:F1} GB frei von {d.TotalGB:F1} GB ({pct:F0}% frei){bar}"),
+                        (string?)null
+                    );
+                });
 
                 await _email.SendAsync(
-                    $"[HackIT Sentry] Low disk space on {device.Hostname}",
-                    $"Device {device.Hostname} has critically low disk space:\n\n" +
-                    string.Join("\n", lines) +
-                    $"\n\nThreshold: {threshold}%\nChecked at: {DateTime.UtcNow:yyyy-MM-dd HH:mm} UTC");
+                    $"[HackIT Sentry] Wenig Speicherplatz auf {device.Hostname}",
+                    AlertEmailService.BuildHtml(
+                        "#ea580c", "Speicherplatz-Warnung",
+                        $"Kritisch wenig Speicherplatz auf {device.Hostname}",
+                        AlertEmailService.DeviceRows(rows),
+                        $"Schwellwert: unter {threshold}% freier Speicher"));
             }
         }
         catch
@@ -291,13 +353,21 @@ public class AgentController : ControllerBase
                             SoftwareVersion = match.Version
                         });
 
+                        var detail =
+                            $"<p style='margin:0 0 12px;font-size:14px;color:#3f3f46;'>" +
+                            $"Folgende Software wurde auf <strong>{device.Hostname}</strong> gefunden:</p>" +
+                            AlertEmailService.DeviceRows([
+                                (match.Name, match.Version.Length > 0 ? $"Version: {match.Version}" : null, null),
+                                ("Blacklist-Regel", entry.NamePattern, null),
+                                ("Grund", entry.Reason ?? "—", null)
+                            ]);
+
                         await _email.SendAsync(
-                            $"[HackIT Sentry] Blacklisted software detected on {device.Hostname}",
-                            $"Blacklisted software was detected on {device.Hostname}:\n\n" +
-                            $"  Software: {match.Name} {match.Version}\n" +
-                            $"  Rule: {entry.NamePattern}" +
-                            (entry.Reason != null ? $"\n  Reason: {entry.Reason}" : "") +
-                            $"\n\nDetected at: {DateTime.UtcNow:yyyy-MM-dd HH:mm} UTC");
+                            $"[HackIT Sentry] Blacklisted Software auf {device.Hostname}",
+                            AlertEmailService.BuildHtml(
+                                "#dc2626", "Software-Alert",
+                                $"Unerlaubte Software erkannt",
+                                detail));
                     }
                 }
             }
@@ -323,7 +393,8 @@ public record RegisterRequest(
     string Hostname,
     string WindowsVersion,
     string CpuModel,
-    double RamTotalGB
+    double RamTotalGB,
+    string? InstallToken = null
 );
 
 public record CheckinRequest(
@@ -338,10 +409,20 @@ public record CheckinRequest(
     double RamUsedGB,
     List<NetworkAdapterDto> NetworkAdapters,
     List<DiskDriveDto> DiskDrives,
-    List<SoftwareDto> InstalledSoftware
+    List<SoftwareDto> InstalledSoftware,
+    string RustDeskId = ""
 );
 
-public record NetworkAdapterDto(string Name, string IpAddress, string MacAddress);
+public record NetworkAdapterDto(
+    string Name,
+    string IpAddress,
+    string MacAddress,
+    string Ipv6Address = "",
+    string SubnetMask = "",
+    string Gateway = "",
+    List<string>? DnsServers = null,
+    long SpeedMbps = 0,
+    string AdapterType = "");
 public record DiskDriveDto(string Drive, double TotalGB, double FreeGB);
 public record SoftwareDto(string Name, string Version, string Publisher, string InstallDate);
 

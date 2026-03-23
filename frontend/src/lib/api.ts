@@ -1,4 +1,4 @@
-const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
+const BASE_URL = import.meta.env.VITE_API_URL || "";
 
 function getToken() {
   return localStorage.getItem("token");
@@ -35,7 +35,7 @@ async function request<T>(
 // Users
 export const users = {
   list: () => request<AppUser[]>("/api/users"),
-  create: (data: { username: string; password: string }) =>
+  create: (data: { username: string; password: string; role?: string }) =>
     request<AppUser>("/api/users", { method: "POST", body: JSON.stringify(data) }),
   resetPassword: (id: string, newPassword: string) =>
     request(`/api/users/${id}/reset-password`, { method: "POST", body: JSON.stringify({ newPassword }) }),
@@ -46,17 +46,31 @@ export const users = {
 // Settings
 export const settings = {
   get: () => request<{ checkinIntervalMinutes: number }>("/api/settings"),
+  saveCheckin: (checkinIntervalMinutes: number) =>
+    request<{ message: string; checkinIntervalMinutes: number }>("/api/settings/checkin", {
+      method: "PUT", body: JSON.stringify({ checkinIntervalMinutes }),
+    }),
   getEmail: () => request<EmailSettings>("/api/settings/email"),
   saveEmail: (data: EmailSettingsInput) =>
     request<{ message: string }>("/api/settings/email", { method: "PUT", body: JSON.stringify(data) }),
   testEmail: () =>
     request<{ message: string }>("/api/settings/email/test", { method: "POST" }),
+  getRustDesk: () => request<RustDeskSettings>("/api/settings/rustdesk"),
+  saveRustDesk: (data: RustDeskSettings) =>
+    request<{ message: string }>("/api/settings/rustdesk", { method: "PUT", body: JSON.stringify(data) }),
 };
 
 // Auth
 export const auth = {
   login: (username: string, password: string) =>
     request<{ token: string; username: string; role: string }>("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    }),
+  setupRequired: () =>
+    request<{ required: boolean }>("/api/auth/setup-required"),
+  setup: (username: string, password: string) =>
+    request<{ token: string; username: string; role: string }>("/api/auth/setup", {
       method: "POST",
       body: JSON.stringify({ username, password }),
     }),
@@ -194,6 +208,7 @@ export interface Device {
   lastSeenAt: string | null;
   licenseType: string;
   isOnline: boolean;
+  rustDeskId: string;
   customer: { id: string; name: string } | null;
   group: { id: string; name: string; color: string | null } | null;
 }
@@ -213,6 +228,7 @@ export interface PatchDevice {
   description?: string;
   customerId?: string | null;
   groupId?: string | null;
+  rustDeskId?: string;
 }
 
 export interface Software {
@@ -242,6 +258,18 @@ export interface PendingDevice {
   ramTotalGB: number;
   requestedAt: string;
   status: string;
+  invitedByUsername: string | null;
+}
+
+export interface InstallToken {
+  id: string;
+  token: string;
+  createdByUsername: string;
+  createdAt: string;
+  expiresAt: string;
+  used: boolean;
+  usedAt: string | null;
+  expired: boolean;
 }
 
 export interface Customer {
@@ -257,6 +285,13 @@ export interface AppUser {
   username: string;
   role: string;
   createdAt: string;
+}
+
+export interface RustDeskSettings {
+  relayHost: string;
+  publicKey: string;
+  autoInstall: boolean;
+  downloadUrl: string;
 }
 
 export interface EmailSettings {
@@ -371,6 +406,21 @@ export interface AgentVersion {
   isLatest: boolean;
   releasedAt: string;
 }
+
+export const installTokens = {
+  list: () => request<InstallToken[]>("/api/install-tokens"),
+  create: (expiryHours: number) =>
+    request<InstallToken>("/api/install-tokens", {
+      method: "POST",
+      body: JSON.stringify({ expiryHours }),
+    }),
+  delete: (id: string) => request(`/api/install-tokens/${id}`, { method: "DELETE" }),
+  sendEmail: (id: string, email: string) =>
+    request<{ message: string }>(`/api/install-tokens/${id}/send-email`, {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    }),
+};
 
 export interface DashboardData {
   devices: { total: number; online: number; offline: number; pending: number };

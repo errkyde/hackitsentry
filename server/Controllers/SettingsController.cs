@@ -9,7 +9,7 @@ namespace HackITSentry.Server.Controllers;
 
 [ApiController]
 [Route("api/settings")]
-[Authorize]
+[Authorize(Roles = "Admin")]
 public class SettingsController : ControllerBase
 {
     private readonly AppDbContext _db;
@@ -25,14 +25,32 @@ public class SettingsController : ControllerBase
         _config = config;
     }
 
-    // GET /api/settings  (kept for agent compatibility)
+    // GET /api/settings  — accessible to all authenticated users
     [HttpGet]
+    [Authorize]
     public IActionResult GetSettings()
     {
         return Ok(new
         {
-            checkinIntervalMinutes = _config.GetValue<int>("CheckinIntervalMinutes", 30)
+            checkinIntervalMinutes = _runtimeSettings.CheckinIntervalMinutes
         });
+    }
+
+    // PUT /api/settings/checkin
+    [HttpPut("checkin")]
+    public async Task<IActionResult> SaveCheckinSettings([FromBody] CheckinSettingsRequest req)
+    {
+        var interval = Math.Clamp(req.CheckinIntervalMinutes, 1, 1440);
+        _runtimeSettings.CheckinIntervalMinutes = interval;
+
+        var existing = await _db.AppSettings.FindAsync("CheckinIntervalMinutes");
+        if (existing != null)
+            existing.Value = interval.ToString();
+        else
+            _db.AppSettings.Add(new AppSetting { Key = "CheckinIntervalMinutes", Value = interval.ToString() });
+
+        await _db.SaveChangesAsync();
+        return Ok(new { message = "Check-in-Intervall gespeichert.", checkinIntervalMinutes = interval });
     }
 
     // GET /api/settings/email
@@ -90,7 +108,10 @@ public class SettingsController : ControllerBase
 
         var error = await _email.SendAsync(
             "[HackIT Sentry] Test-E-Mail",
-            $"Dies ist eine Test-E-Mail von HackIT Sentry.\n\nSent at: {DateTime.UtcNow:yyyy-MM-dd HH:mm} UTC");
+            AlertEmailService.BuildHtml(
+                "#16a34a", "Test",
+                "E-Mail-Konfiguration erfolgreich",
+                "<p style='margin:0;font-size:14px;color:#3f3f46;'>Die E-Mail-Einstellungen von HackIT Sentry sind korrekt konfiguriert. Diese Nachricht dient zur Bestätigung.</p>"));
 
         if (error != null)
             return BadRequest(new { message = $"Fehler: {error}" });
@@ -107,6 +128,40 @@ public class SettingsController : ControllerBase
         return Ok(new { diskAlertThresholdPercent = threshold });
     }
 
+    // GET /api/settings/rustdesk
+    [HttpGet("rustdesk")]
+    public IActionResult GetRustDeskSettings()
+    {
+        return Ok(new
+        {
+            relayHost = _runtimeSettings.RustDeskRelayHost,
+            publicKey = _runtimeSettings.RustDeskPublicKey,
+            autoInstall = _runtimeSettings.RustDeskAutoInstall,
+            downloadUrl = _runtimeSettings.RustDeskDownloadUrl,
+        });
+    }
+
+    // PUT /api/settings/rustdesk
+    [HttpPut("rustdesk")]
+    public async Task<IActionResult> SaveRustDeskSettings([FromBody] RustDeskSettingsRequest req)
+    {
+        _runtimeSettings.RustDeskRelayHost = req.RelayHost ?? "";
+        _runtimeSettings.RustDeskPublicKey = req.PublicKey ?? "";
+        _runtimeSettings.RustDeskAutoInstall = req.AutoInstall;
+        _runtimeSettings.RustDeskDownloadUrl = req.DownloadUrl ?? "";
+
+        foreach (var (key, value) in _runtimeSettings.RustDeskToDbEntries())
+        {
+            var existing = await _db.AppSettings.FindAsync(key);
+            if (existing != null)
+                existing.Value = value;
+            else
+                _db.AppSettings.Add(new AppSetting { Key = key, Value = value });
+        }
+        await _db.SaveChangesAsync();
+        return Ok(new { message = "RustDesk-Einstellungen gespeichert." });
+    }
+
     // PUT /api/settings/alerts
     [HttpPut("alerts")]
     public async Task<IActionResult> SaveAlertSettings([FromBody] AlertSettingsRequest req)
@@ -121,6 +176,7 @@ public class SettingsController : ControllerBase
         await _db.SaveChangesAsync();
         return Ok(new { message = "Alert-Einstellungen gespeichert." });
     }
+
 }
 
 public record EmailSettingsRequest(
@@ -133,3 +189,5 @@ public record EmailSettingsRequest(
     bool UseSsl);
 
 public record AlertSettingsRequest(int DiskAlertThresholdPercent);
+public record CheckinSettingsRequest(int CheckinIntervalMinutes);
+public record RustDeskSettingsRequest(string? RelayHost, string? PublicKey, bool AutoInstall, string? DownloadUrl);

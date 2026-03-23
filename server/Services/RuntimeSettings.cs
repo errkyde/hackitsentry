@@ -8,6 +8,15 @@ namespace HackITSentry.Server.Services;
 /// </summary>
 public class RuntimeSettings
 {
+    // Agent check-in interval
+    public int CheckinIntervalMinutes { get; set; } = 30;
+
+    // RustDesk
+    public string RustDeskRelayHost { get; set; } = "";
+    public string RustDeskPublicKey { get; set; } = "";
+    public bool RustDeskAutoInstall { get; set; } = false;
+    public string RustDeskDownloadUrl { get; set; } = "";
+
     // Email / SMTP
     public string EmailHost { get; set; } = "";
     public int EmailPort { get; set; } = 587;
@@ -23,6 +32,9 @@ public class RuntimeSettings
     /// <summary>Load defaults from IConfiguration (env vars / appsettings).</summary>
     public void LoadFromConfig(IConfiguration config)
     {
+        CheckinIntervalMinutes = config.GetValue<int>("CheckinIntervalMinutes", 30);
+        // Seed RustDeskRelayHost from env var (legacy RUSTDESK_PUBLIC_HOST) if not in DB yet
+        RustDeskRelayHost = config["RustDeskPublicHost"] ?? "";
         EmailHost = config["Email:Host"] ?? "";
         EmailPort = config.GetValue<int>("Email:Port", 587);
         EmailUsername = config["Email:Username"] ?? "";
@@ -36,6 +48,11 @@ public class RuntimeSettings
     public void LoadFromDb(IEnumerable<AppSetting> dbSettings)
     {
         var d = dbSettings.ToDictionary(s => s.Key, s => s.Value);
+        if (d.TryGetValue("CheckinIntervalMinutes", out var intervalStr) && int.TryParse(intervalStr, out var interval) && interval > 0) CheckinIntervalMinutes = interval;
+        if (d.TryGetValue("RustDesk:RelayHost", out var rdRelay) && !string.IsNullOrEmpty(rdRelay)) RustDeskRelayHost = rdRelay;
+        if (d.TryGetValue("RustDesk:PublicKey", out var rdKey)) RustDeskPublicKey = rdKey;
+        if (d.TryGetValue("RustDesk:AutoInstall", out var rdAuto) && bool.TryParse(rdAuto, out var autoInstall)) RustDeskAutoInstall = autoInstall;
+        if (d.TryGetValue("RustDesk:DownloadUrl", out var rdUrl) && !string.IsNullOrEmpty(rdUrl)) RustDeskDownloadUrl = rdUrl;
         if (d.TryGetValue("Email:Host", out var host) && !string.IsNullOrEmpty(host)) EmailHost = host;
         if (d.TryGetValue("Email:Port", out var portStr) && int.TryParse(portStr, out var port)) EmailPort = port;
         if (d.TryGetValue("Email:Username", out var user)) EmailUsername = user;
@@ -45,8 +62,17 @@ public class RuntimeSettings
         if (d.TryGetValue("Email:UseSsl", out var ssl) && bool.TryParse(ssl, out var useSsl)) EmailUseSsl = useSsl;
     }
 
+    public Dictionary<string, string> RustDeskToDbEntries() => new()
+    {
+        ["RustDesk:RelayHost"] = RustDeskRelayHost,
+        ["RustDesk:PublicKey"] = RustDeskPublicKey,
+        ["RustDesk:AutoInstall"] = RustDeskAutoInstall.ToString(),
+        ["RustDesk:DownloadUrl"] = RustDeskDownloadUrl,
+    };
+
     public Dictionary<string, string> ToDbEntries() => new()
     {
+        ["CheckinIntervalMinutes"] = CheckinIntervalMinutes.ToString(),
         ["Email:Host"] = EmailHost,
         ["Email:Port"] = EmailPort.ToString(),
         ["Email:Username"] = EmailUsername,

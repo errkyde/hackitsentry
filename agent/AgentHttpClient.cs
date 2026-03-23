@@ -23,11 +23,12 @@ public class AgentHttpClient
     private HttpClient CreateClient()
     {
         var client = _factory.CreateClient("SentryServer");
-        var apiKey = _config.CurrentValue.ApiKey;
+        var apiKey = SecureStore.LoadApiKey();
         if (!string.IsNullOrEmpty(apiKey))
+        {
             client.DefaultRequestHeaders.Remove("X-Api-Key");
-        if (!string.IsNullOrEmpty(apiKey))
             client.DefaultRequestHeaders.Add("X-Api-Key", apiKey);
+        }
         return client;
     }
 
@@ -53,6 +54,8 @@ public class AgentHttpClient
         {
             var client = _factory.CreateClient("SentryServer");
             var response = await client.GetAsync($"api/agent/register/{token}/status");
+            if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+                return new RegistrationStatusResponse("NotFound", null);
             response.EnsureSuccessStatusCode();
             return await response.Content.ReadFromJsonAsync<RegistrationStatusResponse>();
         }
@@ -69,6 +72,14 @@ public class AgentHttpClient
         {
             var client = CreateClient();
             var response = await client.PostAsJsonAsync("api/agent/checkin", payload);
+
+            if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+            {
+                _logger.LogWarning("Check-in rejected with 401 – API key invalid or revoked. Clearing credentials.");
+                SecureStore.Delete();
+                return null;
+            }
+
             response.EnsureSuccessStatusCode();
             return await response.Content.ReadFromJsonAsync<CheckinResponse>();
         }
@@ -125,6 +136,46 @@ public class AgentHttpClient
         }
     }
 
+    public async Task UninstallAsync()
+    {
+        try
+        {
+            var client = CreateClient();
+            var response = await client.PostAsync("api/agent/uninstall", null);
+            response.EnsureSuccessStatusCode();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Uninstall notification failed");
+        }
+    }
+
+    /// <summary>
+    /// Long-polls the server for up to 29 seconds. Returns when a command is signalled
+    /// or the server times out. Always returns immediately — caller should then fetch pending commands.
+    /// </summary>
+    public async Task WaitForCommandAsync(CancellationToken ct)
+    {
+        try
+        {
+            var client = _factory.CreateClient("SentryServerLongPoll");
+            var apiKey = SecureStore.LoadApiKey();
+            if (!string.IsNullOrEmpty(apiKey))
+            {
+                client.DefaultRequestHeaders.Remove("X-Api-Key");
+                client.DefaultRequestHeaders.Add("X-Api-Key", apiKey);
+            }
+            await client.GetAsync("api/agent/commands/wait", ct);
+        }
+        catch (OperationCanceledException) { /* stoppingToken fired — normal */ }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Long poll interrupted (server unreachable or restarting)");
+            // Brief pause before reconnect to avoid hammering an unreachable server
+            await Task.Delay(TimeSpan.FromSeconds(5), ct).ConfigureAwait(false);
+        }
+    }
+
     public async Task<byte[]?> DownloadFileAsync(string url)
     {
         try
@@ -146,6 +197,11 @@ public record CheckinResponse(
     bool LicenseRequested,
     bool HasPendingCommands,
     string? LatestAgentVersion,
-    string? AgentDownloadUrl
+    string? AgentDownloadUrl,
+    string? RustDeskRelayServer = null,
+    string? RustDeskPublicKey = null,
+    bool RustDeskAutoInstall = false,
+    string? RustDeskDownloadUrl = null,
+    int? CheckinIntervalMinutes = null
 );
 public record PendingCommandDto(Guid Id, string CommandType, string? Parameters);
