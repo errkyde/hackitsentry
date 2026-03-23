@@ -401,6 +401,18 @@ public class SentryAgent : BackgroundService
                     _ = Task.Run(() => UninstallSelf());
                     return (true, "Uninstall initiated");
 
+                case "InitRustDesk":
+                {
+                    _logger.LogInformation("RustDesk initialisation requested via command.");
+                    var state = LoadState() ?? new AgentState();
+                    // Clear configured-for so the next check-in reconfigures relay + key
+                    state.RustDeskConfiguredFor = "";
+                    SaveState(state);
+                    // Trigger immediate check-in (handles install + configure)
+                    _forceCheckinCts.Cancel();
+                    return (true, "RustDesk initialisation triggered — will install/configure at next check-in.");
+                }
+
                 case "UpdateServerUrl":
                 {
                     if (string.IsNullOrWhiteSpace(cmd.Parameters))

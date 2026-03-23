@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
   ArrowLeft, Cpu, Globe, HardDrive, Package, Key, Save, RefreshCw,
-  Trash2, Activity, StickyNote, Terminal, Plus, Send, CheckCircle2
+  Trash2, Activity, StickyNote, Terminal, Plus, Send, CheckCircle2, Monitor
 } from "lucide-react";
 import {
   devices, customers, groups,
@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { toast } from "@/lib/useToast";
 
 function StatusDot({ online }: { online: boolean }) {
   return (
@@ -48,6 +49,9 @@ const COMMAND_TYPES = [
   { value: "Restart", label: "Neustart" },
   { value: "Shutdown", label: "Herunterfahren" },
   { value: "RunScript", label: "Script ausführen" },
+  { value: "ForceCheckin", label: "Sofort einchecken" },
+  { value: "UpdateServerUrl", label: "Server-URL ändern" },
+  { value: "InitRustDesk", label: "RustDesk initialisieren" },
 ];
 
 const STATUS_COLORS: Record<string, string> = {
@@ -71,13 +75,14 @@ export function DeviceDetail() {
   const [licenseLoading, setLicenseLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [softwareSearch, setSoftwareSearch] = useState("");
-  const [deleteDialog, setDeleteDialog] = useState(false);
-  const [deleting, setDeleting] = useState(false);
+  const [uninstallDialog, setUninstallDialog] = useState(false);
+  const [uninstalling, setUninstalling] = useState(false);
 
   // Edit state
   const [description, setDescription] = useState("");
   const [selectedCustomer, setSelectedCustomer] = useState("none");
   const [selectedGroup, setSelectedGroup] = useState("none");
+  const [rustDeskId, setRustDeskId] = useState("");
 
   // Notes state
   const [newNote, setNewNote] = useState("");
@@ -111,11 +116,11 @@ export function DeviceDetail() {
       setDescription(d.description);
       setSelectedCustomer(d.customer?.id ?? "none");
       setSelectedGroup(d.group?.id ?? "none");
-      setLoading(false);
-    });
+      setRustDeskId(d.rustDeskId ?? "");
+    }).catch(() => {}).finally(() => setLoading(false));
     devices.getLicense(id).then(l => {
       setLicense(l);
-      setExpiryInput(l.expiresAt ? new Date(l.expiresAt).toISOString().split("T")[0] : "");
+      if (l) setExpiryInput(l.expiresAt ? new Date(l.expiresAt).toISOString().split("T")[0] : "");
     }).catch(() => {});
   }, [id]);
 
@@ -126,16 +131,24 @@ export function DeviceDetail() {
       description,
       customerId: selectedCustomer === "none" ? null : selectedCustomer,
       groupId: selectedGroup === "none" ? null : selectedGroup,
+      rustDeskId,
     }).finally(() => setSaving(false));
     const updated = await devices.get(id);
     setDevice(updated);
   };
 
-  const handleDelete = async () => {
+  const handleUninstall = async () => {
     if (!id) return;
-    setDeleting(true);
-    await devices.delete(id).catch(() => {});
-    navigate("/devices");
+    setUninstalling(true);
+    const result = await devices.issueCommand(id, "Uninstall").catch(() => null);
+    setUninstalling(false);
+    setUninstallDialog(false);
+    if (result) {
+      toast({ title: "Deinstallation gesendet", description: "Der Agent wird in Kürze deinstalliert und alle Daten vom PC entfernt.", variant: "warning" });
+      navigate("/devices");
+    } else {
+      toast({ title: "Fehler", description: "Befehl konnte nicht gesendet werden. Ist das Gerät erreichbar?" });
+    }
   };
 
   const handleRequestLicense = async () => {
@@ -153,7 +166,7 @@ export function DeviceDetail() {
     try {
       const l = await devices.getLicense(id);
       setLicense(l);
-      setExpiryInput(l.expiresAt ? new Date(l.expiresAt).toISOString().split("T")[0] : "");
+      if (l) setExpiryInput(l.expiresAt ? new Date(l.expiresAt).toISOString().split("T")[0] : "");
     } catch {}
     setLicenseLoading(false);
   };
@@ -222,15 +235,30 @@ export function DeviceDetail() {
             <p className="text-sm text-muted-foreground mt-0.5">{device.description}</p>
           )}
         </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="text-muted-foreground hover:text-destructive"
-          onClick={() => setDeleteDialog(true)}
-        >
-          <Trash2 className="h-4 w-4 mr-1.5" />
-          Löschen
-        </Button>
+        <div className="flex items-center gap-2">
+          {rustDeskId ? (
+            <a href={`rustdesk://connection/new/${rustDeskId}`} target="_blank" rel="noreferrer">
+              <Button variant="outline" size="sm">
+                <Monitor className="h-4 w-4 mr-1.5" />
+                Via RustDesk verbinden
+              </Button>
+            </a>
+          ) : (
+            <Button variant="outline" size="sm" disabled title="RustDesk nicht konfiguriert">
+              <Monitor className="h-4 w-4 mr-1.5" />
+              Via RustDesk verbinden
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-muted-foreground hover:text-destructive"
+            onClick={() => setUninstallDialog(true)}
+          >
+            <Trash2 className="h-4 w-4 mr-1.5" />
+            Deinstallieren
+          </Button>
+        </div>
       </div>
 
       {/* Edit fields */}
@@ -240,7 +268,7 @@ export function DeviceDetail() {
             Gerätezuordnung
           </CardTitle>
         </CardHeader>
-        <CardContent className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <CardContent className="grid grid-cols-1 sm:grid-cols-4 gap-4">
           <div className="space-y-1.5">
             <Label>Beschreibung</Label>
             <Input
@@ -277,7 +305,16 @@ export function DeviceDetail() {
               </SelectContent>
             </Select>
           </div>
-          <div className="sm:col-span-3 flex justify-end">
+          <div className="space-y-1.5">
+            <Label>RustDesk-ID</Label>
+            <Input
+              value={rustDeskId}
+              onChange={(e) => setRustDeskId(e.target.value)}
+              placeholder="z.B. 123456789"
+              className="font-mono"
+            />
+          </div>
+          <div className="sm:col-span-4 flex justify-end">
             <Button size="sm" onClick={handleSave} disabled={saving}>
               <Save className="h-3.5 w-3.5 mr-1.5" />
               {saving ? "Speichern..." : "Speichern"}
@@ -336,11 +373,39 @@ export function DeviceDetail() {
               ) : (
                 <div className="space-y-4">
                   {networkAdapters.map((adapter: any, i: number) => (
-                    <div key={i} className="rounded-md border border-border p-4">
-                      <div className="font-medium text-sm mb-2">{adapter.name}</div>
-                      <div className="grid grid-cols-2 gap-1 text-sm">
-                        <span className="text-muted-foreground">IP-Adresse</span>
-                        <span>{adapter.ipAddress || "—"}</span>
+                    <div key={i} className="rounded-md border border-border p-4 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="font-medium text-sm">{adapter.name}</span>
+                        <div className="flex items-center gap-2">
+                          {adapter.adapterType && (
+                            <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">{adapter.adapterType}</span>
+                          )}
+                          {adapter.speedMbps > 0 && (
+                            <span className="text-xs text-muted-foreground">{adapter.speedMbps >= 1000 ? `${adapter.speedMbps / 1000} Gbps` : `${adapter.speedMbps} Mbps`}</span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
+                        {adapter.ipAddress && <>
+                          <span className="text-muted-foreground">IPv4-Adresse</span>
+                          <span className="font-mono text-xs">{adapter.ipAddress}</span>
+                        </>}
+                        {adapter.subnetMask && <>
+                          <span className="text-muted-foreground">Subnetzmaske</span>
+                          <span className="font-mono text-xs">{adapter.subnetMask}</span>
+                        </>}
+                        {adapter.gateway && <>
+                          <span className="text-muted-foreground">Standardgateway</span>
+                          <span className="font-mono text-xs">{adapter.gateway}</span>
+                        </>}
+                        {adapter.ipv6Address && <>
+                          <span className="text-muted-foreground">IPv6-Adresse</span>
+                          <span className="font-mono text-xs break-all">{adapter.ipv6Address}</span>
+                        </>}
+                        {adapter.dnsServers?.length > 0 && <>
+                          <span className="text-muted-foreground">DNS-Server</span>
+                          <span className="font-mono text-xs">{adapter.dnsServers.join(", ")}</span>
+                        </>}
                         <span className="text-muted-foreground">MAC-Adresse</span>
                         <span className="font-mono text-xs">{adapter.macAddress || "—"}</span>
                       </div>
@@ -364,14 +429,16 @@ export function DeviceDetail() {
                 return (
                   <div className="space-y-3">
                     {disks.map((disk: any, i: number) => {
-                      const used = disk.totalGB - disk.freeGB;
-                      const pct = disk.totalGB > 0 ? (used / disk.totalGB) * 100 : 0;
+                      const total = disk.totalGB ?? 0;
+                      const free = disk.freeGB ?? 0;
+                      const used = total - free;
+                      const pct = total > 0 ? (used / total) * 100 : 0;
                       return (
                         <div key={i} className="rounded-md border border-border p-4">
                           <div className="flex justify-between text-sm mb-2">
                             <span className="font-medium">{disk.drive}</span>
                             <span className="text-muted-foreground">
-                              {used.toFixed(1)} / {disk.totalGB.toFixed(1)} GB
+                              {used.toFixed(1)} / {total.toFixed(1)} GB
                             </span>
                           </div>
                           <div className="h-2 rounded-full bg-muted overflow-hidden">
@@ -624,6 +691,17 @@ export function DeviceDetail() {
                       />
                     </div>
                   )}
+                  {commandType === "UpdateServerUrl" && (
+                    <div className="space-y-1.5 flex-2">
+                      <Label>Neue Server-URL</Label>
+                      <Input
+                        value={commandParams}
+                        onChange={e => setCommandParams(e.target.value)}
+                        placeholder="https://sentry.example.com"
+                        type="url"
+                      />
+                    </div>
+                  )}
                   <Button
                     onClick={handleIssueCommand}
                     disabled={commandLoading}
@@ -634,7 +712,7 @@ export function DeviceDetail() {
                   </Button>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Der Befehl wird beim nächsten Check-in des Agents ausgeführt.
+                  Befehle werden in Echtzeit über die aktive Agent-Verbindung ausgeführt.
                 </p>
               </div>
 
@@ -691,11 +769,11 @@ export function DeviceDetail() {
                     <p className="text-xs text-muted-foreground mb-2">RAM-Auslastung (letzte Check-ins)</p>
                     <div className="flex items-end gap-0.5 h-16">
                       {[...device.recentCheckins].reverse().map((c, i) => {
-                        const pct = device.ramTotalGB > 0 ? (c.ramUsedGB / device.ramTotalGB) * 100 : 0;
+                        const pct = device.ramTotalGB > 0 ? ((c.ramUsedGB ?? 0) / device.ramTotalGB) * 100 : 0;
                         return (
                           <div
                             key={i}
-                            title={`${c.ramUsedGB.toFixed(1)} / ${device.ramTotalGB} GB — ${new Date(c.checkedInAt).toLocaleString("de-DE")}`}
+                            title={`${(c.ramUsedGB ?? 0).toFixed(1)} / ${device.ramTotalGB} GB — ${new Date(c.checkedInAt).toLocaleString("de-DE")}`}
                             className={cn(
                               "flex-1 min-w-[4px] rounded-sm transition-all",
                               pct > 90 ? "bg-destructive" : pct > 70 ? "bg-amber-500" : "bg-primary"
@@ -725,10 +803,10 @@ export function DeviceDetail() {
                                 {new Date(c.checkedInAt).toLocaleString("de-DE")}
                               </td>
                               <td className="px-3 py-2">
-                                {c.ramUsedGB.toFixed(1)} / {device.ramTotalGB} GB
+                                {(c.ramUsedGB ?? 0).toFixed(1)} / {device.ramTotalGB} GB
                               </td>
                               <td className="px-3 py-2 text-xs text-muted-foreground">
-                                {disks.map(d => `${d.drive} ${(d.totalGB - d.freeGB).toFixed(0)}/${d.totalGB.toFixed(0)}GB`).join(" · ")}
+                                {disks.map(d => `${d.drive} ${((d.totalGB ?? 0) - (d.freeGB ?? 0)).toFixed(0)}/${(d.totalGB ?? 0).toFixed(0)}GB`).join(" · ")}
                               </td>
                             </tr>
                           );
@@ -743,20 +821,24 @@ export function DeviceDetail() {
         </TabsContent>
       </Tabs>
 
-      {/* Delete confirmation dialog */}
-      <Dialog open={deleteDialog} onOpenChange={setDeleteDialog}>
+      {/* Uninstall confirmation dialog */}
+      <Dialog open={uninstallDialog} onOpenChange={setUninstallDialog}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle>Gerät löschen</DialogTitle>
+            <DialogTitle>Agent deinstallieren</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            Soll <strong className="text-foreground">{device.hostname}</strong> wirklich gelöscht werden?
-            Alle zugehörigen Daten (Check-ins, Software, Lizenzen) werden unwiderruflich entfernt.
+            Der HackIT Sentry Agent auf <strong className="text-foreground">{device.hostname}</strong> wird
+            vollständig deinstalliert — Dienst, alle Dateien und Konfigurationen werden vom Windows-PC entfernt.
+            Das Gerät wird aus der Datenbank gelöscht.
           </p>
+          <div className="rounded-md bg-amber-500/10 border border-amber-500/20 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
+            Dieser Vorgang kann nicht rückgängig gemacht werden.
+          </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteDialog(false)}>Abbrechen</Button>
-            <Button variant="destructive" onClick={handleDelete} disabled={deleting}>
-              {deleting ? "Wird gelöscht..." : "Löschen"}
+            <Button variant="outline" onClick={() => setUninstallDialog(false)}>Abbrechen</Button>
+            <Button variant="destructive" onClick={handleUninstall} disabled={uninstalling}>
+              {uninstalling ? "Wird gesendet..." : "Deinstallieren"}
             </Button>
           </DialogFooter>
         </DialogContent>
