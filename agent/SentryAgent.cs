@@ -254,8 +254,9 @@ public class SentryAgent : BackgroundService
             return;
         }
 
-        _logger.LogDebug("Check-in successful. LicenseRequested={LicReq}, HasCommands={HasCmds}",
-            response.LicenseRequested, response.HasPendingCommands);
+        _logger.LogInformation("Check-in successful. LicenseRequested={LicReq}, HasCommands={HasCmds}, RustDeskAutoInstall={RdAuto}, RustDeskRelay={RdRelay}, RustDeskDownloadUrl={RdUrl}",
+            response.LicenseRequested, response.HasPendingCommands,
+            response.RustDeskAutoInstall, response.RustDeskRelayServer ?? "(leer)", response.RustDeskDownloadUrl ?? "(leer)");
 
         if (response.CheckinIntervalMinutes.HasValue && response.CheckinIntervalMinutes.Value > 0)
             _checkinIntervalOverride = response.CheckinIntervalMinutes.Value;
@@ -280,12 +281,18 @@ public class SentryAgent : BackgroundService
         }
 
         // Auto-install RustDesk if requested and not yet present
-        if (response.RustDeskAutoInstall && !string.IsNullOrEmpty(response.RustDeskDownloadUrl))
+        _logger.LogInformation("RustDesk check: AutoInstall={Auto}, Installed={Installed}, DownloadUrl={Url}",
+            response.RustDeskAutoInstall, IsRustDeskInstalled(), response.RustDeskDownloadUrl ?? "(leer)");
+        if (response.RustDeskAutoInstall)
         {
             if (!IsRustDeskInstalled())
             {
                 _logger.LogInformation("RustDesk not found — starting silent installation...");
                 await InstallRustDeskAsync(response.RustDeskDownloadUrl);
+            }
+            else
+            {
+                _logger.LogInformation("RustDesk already installed — skipping install.");
             }
         }
 
