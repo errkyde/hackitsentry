@@ -214,7 +214,7 @@ export function DeviceDetail() {
       setCommandParams("");
       toast({ title: "Befehl gesendet", description: `„${commandType}" wurde in die Warteschlange eingereiht.` });
     } catch (err: any) {
-      toast({ title: "Fehler", description: err.message || "Befehl konnte nicht gesendet werden.", variant: "destructive" });
+      toast({ title: "Fehler", description: err.message || "Befehl konnte nicht gesendet werden.", variant: "warning" });
     } finally {
       setCommandLoading(false);
     }
