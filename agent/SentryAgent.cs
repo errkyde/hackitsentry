@@ -644,14 +644,70 @@ public class SentryAgent : BackgroundService
         return exePaths.Any(File.Exists);
     }
 
-    private async Task InstallRustDeskAsync(string downloadUrl)
+    private async Task<string?> ResolveRustDeskDownloadUrlAsync(string? configuredUrl)
     {
+        if (!string.IsNullOrWhiteSpace(configuredUrl))
+            return configuredUrl;
+
+        try
+        {
+            _logger.LogInformation("No download URL configured — fetching latest RustDesk release from GitHub...");
+            using var http = new System.Net.Http.HttpClient();
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("HackITSentry-Agent/1.0");
+            http.Timeout = TimeSpan.FromSeconds(15);
+
+            var json = await http.GetStringAsync(
+                "https://api.github.com/repos/rustdesk/rustdesk/releases/latest");
+
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var assets = doc.RootElement.GetProperty("assets");
+
+            // Prefer x86_64 installer; skip portable and sciter variants
+            string? fallback = null;
+            foreach (var asset in assets.EnumerateArray())
+            {
+                var name = asset.GetProperty("name").GetString() ?? "";
+                var url  = asset.GetProperty("browser_download_url").GetString() ?? "";
+
+                if (!name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) continue;
+                if (name.Contains("portable", StringComparison.OrdinalIgnoreCase)) continue;
+                if (name.Contains("sciter",   StringComparison.OrdinalIgnoreCase)) continue;
+
+                if (name.Contains("x86_64", StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogInformation("Found RustDesk installer: {Name}", name);
+                    return url;
+                }
+                fallback ??= url; // keep first .exe as fallback
+            }
+
+            if (fallback != null)
+                _logger.LogInformation("Using fallback RustDesk installer.");
+
+            return fallback;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to resolve RustDesk download URL from GitHub");
+            return null;
+        }
+    }
+
+    private async Task InstallRustDeskAsync(string? configuredUrl)
+    {
+        var downloadUrl = await ResolveRustDeskDownloadUrlAsync(configuredUrl);
+        if (string.IsNullOrEmpty(downloadUrl))
+        {
+            _logger.LogWarning("RustDesk install skipped — no download URL available.");
+            return;
+        }
+
         var tempPath = Path.Combine(Path.GetTempPath(), "rustdesk-installer.exe");
         try
         {
             _logger.LogInformation("Downloading RustDesk from {Url}", downloadUrl);
             using var http = new System.Net.Http.HttpClient();
-            http.Timeout = TimeSpan.FromMinutes(5);
+            http.Timeout = TimeSpan.FromMinutes(10);
             var bytes = await http.GetByteArrayAsync(downloadUrl);
             await File.WriteAllBytesAsync(tempPath, bytes);
 
