@@ -198,13 +198,17 @@ export function DeviceDetail() {
   const handleIssueCommand = async () => {
     if (!id) return;
     setCommandLoading(true);
-    const result = await devices.issueCommand(id, commandType, commandParams || undefined).catch(() => null);
-    if (result) {
+    try {
+      await devices.issueCommand(id, commandType, commandParams || undefined);
       const updatedCmds = await devices.getCommands(id).catch(() => commands);
       setCommands(updatedCmds);
+      setCommandParams("");
+      toast({ title: "Befehl gesendet", description: `„${commandType}" wurde in die Warteschlange eingereiht.` });
+    } catch (err: any) {
+      toast({ title: "Fehler", description: err.message || "Befehl konnte nicht gesendet werden.", variant: "destructive" });
+    } finally {
+      setCommandLoading(false);
     }
-    setCommandParams("");
-    setCommandLoading(false);
   };
 
   if (loading) {
