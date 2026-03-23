@@ -7,6 +7,8 @@
     <RootNamespace>HackITSentry.Agent</RootNamespace>
     <UserSecretsId>hackit-sentry-agent</UserSecretsId>
     <RuntimeIdentifiers>win-x64;win-x86</RuntimeIdentifiers>
+    <Version>1.0.1</Version>
+    <AssemblyVersion>1.0.1.0</AssemblyVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -14,6 +16,7 @@
     <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="8.0.0" />
     <PackageReference Include="Microsoft.Extensions.Http" Version="8.0.0" />
     <PackageReference Include="System.Management" Version="8.0.0" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
   </ItemGroup>
 
 </Project>
