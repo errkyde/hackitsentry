@@ -4,7 +4,12 @@ public enum CommandType
 {
     Restart,
     Shutdown,
-    RunScript
+    RunScript,
+    ForceCheckin,
+    Uninstall,
+    UpdateServerUrl,
+    CollectLicense,
+    InitRustDesk
 }
 
 public enum CommandStatus
