@@ -289,7 +289,7 @@ export function Settings() {
       setAgentVers(updated);
       toast({ title: "Agent veröffentlicht", description: `Version ${res.version} ist jetzt verfügbar.` });
     } catch (err: any) {
-      toast({ title: "Publish fehlgeschlagen", description: err.message || "Fehler", variant: "destructive" });
+      toast({ title: "Publish fehlgeschlagen", description: err.message || "Fehler", variant: "warning" });
     } finally {
       setPublishLoading(false);
     }
