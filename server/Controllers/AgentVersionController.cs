@@ -9,6 +9,7 @@ namespace HackITSentry.Server.Controllers;
 
 [ApiController]
 [Route("api/agent-versions")]
+[Authorize(Roles = "Admin")]
 public class AgentVersionController : ControllerBase
 {
     private readonly AppDbContext _db;
@@ -126,6 +127,63 @@ public class AgentVersionController : ControllerBase
         await _db.SaveChangesAsync();
 
         return NoContent();
+    }
+
+    // POST /api/agent-versions/publish  (admin)
+    // Copies the pre-built agent exe from /app/agent/ into /app/downloads/
+    // and registers it as the new latest version in the DB.
+    [HttpPost("publish")]
+    [Authorize]
+    public async Task<IActionResult> Publish([FromServices] IConfiguration config)
+    {
+        var agentExe = Path.Combine(AppContext.BaseDirectory, "agent", "HackITSentry.Agent.exe");
+        var versionFile = Path.Combine(AppContext.BaseDirectory, "agent", "agent-version.txt");
+
+        if (!System.IO.File.Exists(agentExe))
+            return StatusCode(503, new { message = "Agent binary not found in server image. Rebuild the server container." });
+
+        var version = System.IO.File.Exists(versionFile)
+            ? (await System.IO.File.ReadAllTextAsync(versionFile)).Trim()
+            : "1.0.0";
+
+        var downloadsDir = Path.Combine(AppContext.BaseDirectory, "downloads");
+        Directory.CreateDirectory(downloadsDir);
+
+        var outFileName = $"HackITSentry-Agent-{version}.exe";
+        var outPath = Path.Combine(downloadsDir, outFileName);
+        System.IO.File.Copy(agentExe, outPath, overwrite: true);
+
+        // Build public download URL from OutpostPublicUrl or request origin
+        var baseUrl = config["OutpostPublicUrl"]?.TrimEnd('/')
+            ?? $"{Request.Scheme}://{Request.Host}";
+        var downloadUrl = $"{baseUrl}/downloads/{outFileName}";
+
+        // Mark all existing as non-latest, upsert this version
+        var existing = await _db.AgentVersions.FirstOrDefaultAsync(v => v.Version == version);
+        var allLatest = await _db.AgentVersions.Where(v => v.IsLatest).ToListAsync();
+        foreach (var v in allLatest) v.IsLatest = false;
+
+        if (existing != null)
+        {
+            existing.DownloadUrl = downloadUrl;
+            existing.IsLatest = true;
+            existing.ReleasedAt = DateTime.UtcNow;
+        }
+        else
+        {
+            _db.AgentVersions.Add(new AgentVersion
+            {
+                Version = version,
+                DownloadUrl = downloadUrl,
+                IsLatest = true,
+                ReleasedAt = DateTime.UtcNow
+            });
+        }
+
+        await _db.SaveChangesAsync();
+        await _audit.LogAsync("agent-version.publish", "AgentVersion", version, downloadUrl);
+
+        return Ok(new { version, downloadUrl });
     }
 }
 

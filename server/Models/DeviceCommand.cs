@@ -9,7 +9,8 @@ public enum CommandType
     Uninstall,
     UpdateServerUrl,
     CollectLicense,
-    InitRustDesk
+    InitRustDesk,
+    ForceUpdate
 }
 
 public enum CommandStatus

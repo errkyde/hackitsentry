@@ -104,6 +104,7 @@ export function Settings() {
   // --- Agent Versions ---
   const [agentVers, setAgentVers] = useState<AgentVersion[]>([]);
   const [versionDialog, setVersionDialog] = useState(false);
+  const [publishLoading, setPublishLoading] = useState(false);
   const [verVersion, setVerVersion] = useState("");
   const [verUrl, setVerUrl] = useState("");
   const [verChangelog, setVerChangelog] = useState("");
@@ -277,6 +278,20 @@ export function Settings() {
   const handleDeleteVersion = async (id: string) => {
     await agentVersions.delete(id).catch(() => {});
     setAgentVers(prev => prev.filter(v => v.id !== id));
+  };
+
+  const handlePublishAgent = async () => {
+    setPublishLoading(true);
+    try {
+      const res = await agentVersions.publish();
+      const updated = await agentVersions.list().catch(() => agentVers);
+      setAgentVers(updated);
+      toast({ title: "Agent veröffentlicht", description: `Version ${res.version} ist jetzt verfügbar.` });
+    } catch (err: any) {
+      toast({ title: "Publish fehlgeschlagen", description: err.message || "Fehler", variant: "destructive" });
+    } finally {
+      setPublishLoading(false);
+    }
   };
 
   const auditTotalPages = Math.ceil(auditTotal / AUDIT_PAGE_SIZE);
@@ -604,10 +619,16 @@ export function Settings() {
               </CardTitle>
               <CardDescription>Verwalte verfügbare Agent-Versionen. Die aktuelle Version wird den Agents beim Check-in gemeldet.</CardDescription>
             </div>
-            <Button size="sm" onClick={() => { setVerVersion(""); setVerUrl(""); setVerChangelog(""); setVerIsLatest(true); setVersionDialog(true); }}>
-              <Plus className="h-3.5 w-3.5 mr-1.5" />
-              Version hinzufügen
-            </Button>
+            <div className="flex gap-2">
+              <Button size="sm" variant="outline" onClick={handlePublishAgent} disabled={publishLoading}>
+                <Download className="h-3.5 w-3.5 mr-1.5" />
+                {publishLoading ? "Wird veröffentlicht..." : "Aktuelle Version publishen"}
+              </Button>
+              <Button size="sm" onClick={() => { setVerVersion(""); setVerUrl(""); setVerChangelog(""); setVerIsLatest(true); setVersionDialog(true); }}>
+                <Plus className="h-3.5 w-3.5 mr-1.5" />
+                Manuell hinzufügen
+              </Button>
+            </div>
           </div>
         </CardHeader>
         <CardContent>

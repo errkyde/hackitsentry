@@ -401,6 +401,16 @@ public class SentryAgent : BackgroundService
                     _ = Task.Run(() => UninstallSelf());
                     return (true, "Uninstall initiated");
 
+                case "ForceUpdate":
+                {
+                    if (string.IsNullOrWhiteSpace(cmd.Parameters))
+                        return (false, "No download URL provided");
+
+                    _logger.LogInformation("Force update requested — URL: {Url}", cmd.Parameters);
+                    _ = Task.Run(() => TryAutoUpdateAsync(cmd.Parameters.Trim(), "forced"));
+                    return (true, "Update download started, service will restart shortly.");
+                }
+
                 case "InitRustDesk":
                 {
                     _logger.LogInformation("RustDesk initialisation requested via command.");
@@ -489,29 +499,41 @@ public class SentryAgent : BackgroundService
     {
         try
         {
-            _logger.LogInformation("Downloading agent update from {Url}...", downloadUrl);
+            _logger.LogInformation("Downloading agent update v{Version} from {Url}...", newVersion, downloadUrl);
 
-            var data = await _http.DownloadFileAsync(downloadUrl);
-            if (data == null)
-            {
-                _logger.LogWarning("Failed to download update.");
-                return;
-            }
+            using var http = new System.Net.Http.HttpClient();
+            http.Timeout = TimeSpan.FromMinutes(10);
+            var data = await http.GetByteArrayAsync(downloadUrl);
 
             var updateDir = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
                 "HackITSentry", "updates");
             Directory.CreateDirectory(updateDir);
 
-            var installerPath = Path.Combine(updateDir, $"SentryAgent-{newVersion}.msi");
-            await File.WriteAllBytesAsync(installerPath, data);
+            var newExe = Path.Combine(updateDir, $"HackITSentry.Agent-{newVersion}.exe");
+            await File.WriteAllBytesAsync(newExe, data);
 
-            _logger.LogInformation("Starting installer: {Path}", installerPath);
-            Process.Start(new ProcessStartInfo("msiexec.exe", $"/i \"{installerPath}\" /quiet /norestart")
+            // Batch: wait → stop service → replace exe → start service → cleanup
+            var installPath = @"C:\Program Files\HackIT Sentry\Agent\HackITSentry.Agent.exe";
+            var bat = Path.Combine(Path.GetTempPath(), "hackit_update.bat");
+            File.WriteAllText(bat,
+                "@echo off\r\n" +
+                "ping -n 5 127.0.0.1 > nul\r\n" +
+                "sc stop HackITSentryAgent > nul 2>&1\r\n" +
+                "ping -n 3 127.0.0.1 > nul\r\n" +
+                $"copy /y \"{newExe}\" \"{installPath}\" > nul\r\n" +
+                "sc start HackITSentryAgent > nul 2>&1\r\n" +
+                $"del /f /q \"{newExe}\"\r\n" +
+                "del /f /q \"%~f0\"\r\n");
+
+            Process.Start(new ProcessStartInfo("cmd.exe", $"/c \"{bat}\"")
             {
-                UseShellExecute = false,
-                CreateNoWindow = true
+                CreateNoWindow = true,
+                UseShellExecute = false
             });
+
+            _logger.LogInformation("Update installer launched, exiting for replacement...");
+            Environment.Exit(0);
         }
         catch (Exception ex)
         {

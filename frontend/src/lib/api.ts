@@ -170,6 +170,8 @@ export const agentVersions = {
     request(`/api/agent-versions/${id}/set-latest`, { method: "PATCH" }),
   delete: (id: string) =>
     request(`/api/agent-versions/${id}`, { method: "DELETE" }),
+  publish: () =>
+    request<{ version: string; downloadUrl: string }>("/api/agent-versions/publish", { method: "POST" }),
 };
 
 // Customers

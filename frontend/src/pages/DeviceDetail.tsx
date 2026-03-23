@@ -5,7 +5,7 @@ import {
   Trash2, Activity, StickyNote, Terminal, Plus, Send, CheckCircle2, Monitor
 } from "lucide-react";
 import {
-  devices, customers, groups,
+  devices, customers, groups, agentVersions,
   type DeviceDetail as DeviceDetailType,
   type Software, type LicenseInfo, type Customer, type Group,
   type DeviceNote, type DeviceCommand
@@ -52,6 +52,7 @@ const COMMAND_TYPES = [
   { value: "ForceCheckin", label: "Sofort einchecken" },
   { value: "UpdateServerUrl", label: "Server-URL ändern" },
   { value: "InitRustDesk", label: "RustDesk initialisieren" },
+  { value: "ForceUpdate", label: "Update erzwingen" },
 ];
 
 const STATUS_COLORS: Record<string, string> = {
@@ -92,6 +93,7 @@ export function DeviceDetail() {
   const [commandType, setCommandType] = useState("Restart");
   const [commandParams, setCommandParams] = useState("");
   const [commandLoading, setCommandLoading] = useState(false);
+  const [latestAgentDownloadUrl, setLatestAgentDownloadUrl] = useState("");
 
   // License expiry state
   const [expiryInput, setExpiryInput] = useState("");
@@ -118,6 +120,10 @@ export function DeviceDetail() {
       setSelectedGroup(d.group?.id ?? "none");
       setRustDeskId(d.rustDeskId ?? "");
     }).catch(() => {}).finally(() => setLoading(false));
+    agentVersions.list().then(vers => {
+      const latest = vers.find(v => v.isLatest);
+      if (latest?.downloadUrl) setLatestAgentDownloadUrl(latest.downloadUrl);
+    }).catch(() => {});
     devices.getLicense(id).then(l => {
       setLicense(l);
       if (l) setExpiryInput(l.expiresAt ? new Date(l.expiresAt).toISOString().split("T")[0] : "");
@@ -199,7 +205,10 @@ export function DeviceDetail() {
     if (!id) return;
     setCommandLoading(true);
     try {
-      await devices.issueCommand(id, commandType, commandParams || undefined);
+      const params = commandType === "ForceUpdate"
+        ? (commandParams || latestAgentDownloadUrl || undefined)
+        : (commandParams || undefined);
+      await devices.issueCommand(id, commandType, params);
       const updatedCmds = await devices.getCommands(id).catch(() => commands);
       setCommands(updatedCmds);
       setCommandParams("");
@@ -703,6 +712,16 @@ export function DeviceDetail() {
                         onChange={e => setCommandParams(e.target.value)}
                         placeholder="https://sentry.example.com"
                         type="url"
+                      />
+                    </div>
+                  )}
+                  {commandType === "ForceUpdate" && (
+                    <div className="space-y-1.5 flex-2">
+                      <Label>Download-URL</Label>
+                      <Input
+                        value={commandParams || latestAgentDownloadUrl}
+                        onChange={e => setCommandParams(e.target.value)}
+                        placeholder={latestAgentDownloadUrl || "https://…/HackITSentry-Agent.exe"}
                       />
                     </div>
                   )}
