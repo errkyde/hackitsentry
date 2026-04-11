@@ -73,6 +73,7 @@ export function DeviceDetail() {
   const [customerList, setCustomerList] = useState<Customer[]>([]);
   const [groupList, setGroupList] = useState<Group[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [licenseLoading, setLicenseLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [softwareSearch, setSoftwareSearch] = useState("");
@@ -99,8 +100,9 @@ export function DeviceDetail() {
   const [expiryInput, setExpiryInput] = useState("");
   const [expirySaving, setExpirySaving] = useState(false);
 
-  useEffect(() => {
+  const loadData = (showLoading = false) => {
     if (!id) return;
+    if (showLoading) setRefreshing(true);
     Promise.all([
       devices.get(id),
       devices.getSoftware(id),
@@ -119,7 +121,10 @@ export function DeviceDetail() {
       setSelectedCustomer(d.customer?.id ?? "none");
       setSelectedGroup(d.group?.id ?? "none");
       setRustDeskId(d.rustDeskId ?? "");
-    }).catch(() => {}).finally(() => setLoading(false));
+    }).catch(() => {}).finally(() => {
+      setLoading(false);
+      setRefreshing(false);
+    });
     agentVersions.list().then(vers => {
       const latest = vers.find(v => v.isLatest);
       if (latest?.downloadUrl) setLatestAgentDownloadUrl(latest.downloadUrl);
@@ -128,7 +133,9 @@ export function DeviceDetail() {
       setLicense(l);
       if (l) setExpiryInput(l.expiresAt ? new Date(l.expiresAt).toISOString().split("T")[0] : "");
     }).catch(() => {});
-  }, [id]);
+  };
+
+  useEffect(() => { loadData(); }, [id]);
 
   const handleSave = async () => {
     if (!id) return;
@@ -249,6 +256,10 @@ export function DeviceDetail() {
           )}
         </div>
         <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => loadData(true)} disabled={refreshing}>
+            <RefreshCw className={cn("h-4 w-4 mr-1.5", refreshing && "animate-spin")} />
+            Aktualisieren
+          </Button>
           {rustDeskId ? (
             <a href={`rustdesk://connection/new/${rustDeskId}`} target="_blank" rel="noreferrer">
               <Button variant="outline" size="sm">
@@ -319,11 +330,14 @@ export function DeviceDetail() {
             </Select>
           </div>
           <div className="space-y-1.5">
-            <Label>RustDesk-ID</Label>
+            <Label className="flex items-center gap-2">
+              RustDesk-ID
+              {!rustDeskId && <span className="text-xs text-muted-foreground font-normal">(ausstehend)</span>}
+            </Label>
             <Input
               value={rustDeskId}
               onChange={(e) => setRustDeskId(e.target.value)}
-              placeholder="z.B. 123456789"
+              placeholder="Automatisch befüllt"
               className="font-mono"
             />
           </div>
@@ -371,6 +385,7 @@ export function DeviceDetail() {
               <InfoRow label="CPU" value={device.cpuModel} />
               <InfoRow label="CPU-Kerne" value={device.cpuCores || undefined} />
               <InfoRow label="RAM gesamt" value={device.ramTotalGB ? `${device.ramTotalGB} GB` : undefined} />
+              <InfoRow label="Agent-Version" value={device.agentVersion || undefined} />
               <InfoRow label="Zuletzt gesehen" value={device.lastSeenAt ? new Date(device.lastSeenAt).toLocaleString("de-DE") : undefined} />
               <InfoRow label="Registriert am" value={new Date(device.createdAt).toLocaleString("de-DE")} />
             </CardContent>

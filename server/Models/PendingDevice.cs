@@ -13,6 +13,8 @@ public class PendingDevice
     public DateTime RequestedAt { get; set; } = DateTime.UtcNow;
     public PendingDeviceStatus Status { get; set; } = PendingDeviceStatus.Pending;
 
+    public string? InvitedByUsername { get; set; }
+
     // Set when approved — lets agent polling retrieve the API key reliably
     public Guid? ApprovedDeviceId { get; set; }
 }

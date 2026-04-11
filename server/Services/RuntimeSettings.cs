@@ -26,6 +26,13 @@ public class RuntimeSettings
     public string EmailTo { get; set; } = "";
     public bool EmailUseSsl { get; set; } = false;
 
+    // Notification defaults
+    public bool NotifyDeviceOffline { get; set; } = true;
+    public bool NotifyDeviceOnline { get; set; } = true;
+    public bool NotifyNewPending { get; set; } = true;
+    public bool NotifySoftwareAlert { get; set; } = true;
+    public bool NotifyDiskFull { get; set; } = true;
+
     public bool IsEmailConfigured =>
         !string.IsNullOrWhiteSpace(EmailHost) && !string.IsNullOrWhiteSpace(EmailTo);
 
@@ -60,6 +67,11 @@ public class RuntimeSettings
         if (d.TryGetValue("Email:From", out var from) && !string.IsNullOrEmpty(from)) EmailFrom = from;
         if (d.TryGetValue("Email:To", out var to)) EmailTo = to;
         if (d.TryGetValue("Email:UseSsl", out var ssl) && bool.TryParse(ssl, out var useSsl)) EmailUseSsl = useSsl;
+        if (d.TryGetValue("Notify:DeviceOffline", out var nOff) && bool.TryParse(nOff, out var notifyOff)) NotifyDeviceOffline = notifyOff;
+        if (d.TryGetValue("Notify:DeviceOnline", out var nOn) && bool.TryParse(nOn, out var notifyOn)) NotifyDeviceOnline = notifyOn;
+        if (d.TryGetValue("Notify:NewPending", out var nPend) && bool.TryParse(nPend, out var notifyPend)) NotifyNewPending = notifyPend;
+        if (d.TryGetValue("Notify:SoftwareAlert", out var nSw) && bool.TryParse(nSw, out var notifySw)) NotifySoftwareAlert = notifySw;
+        if (d.TryGetValue("Notify:DiskFull", out var nDisk) && bool.TryParse(nDisk, out var notifyDisk)) NotifyDiskFull = notifyDisk;
     }
 
     public Dictionary<string, string> RustDeskToDbEntries() => new()

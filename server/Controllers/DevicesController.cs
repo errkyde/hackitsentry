@@ -15,15 +15,17 @@ public class DevicesController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly LicenseEncryptionService _encryption;
-    private readonly IConfiguration _config;
+    private readonly RuntimeSettings _runtimeSettings;
     private readonly AuditService _audit;
+    private readonly AgentCommandNotifier _notifier;
 
-    public DevicesController(AppDbContext db, LicenseEncryptionService encryption, IConfiguration config, AuditService audit)
+    public DevicesController(AppDbContext db, LicenseEncryptionService encryption, RuntimeSettings runtimeSettings, AuditService audit, AgentCommandNotifier notifier)
     {
         _db = db;
         _encryption = encryption;
-        _config = config;
+        _runtimeSettings = runtimeSettings;
         _audit = audit;
+        _notifier = notifier;
     }
 
     // GET /api/devices
@@ -37,7 +39,7 @@ public class DevicesController : ControllerBase
         [FromQuery] double? minRam,
         [FromQuery] double? maxRam)
     {
-        var onlineThreshold = DateTime.UtcNow.AddMinutes(-(_config.GetValue<int>("CheckinIntervalMinutes", 30) * 2 + 5));
+        var onlineThreshold = DateTime.UtcNow.AddMinutes(-(_runtimeSettings.CheckinIntervalMinutes * 2 + 5));
 
         var query = _db.Devices
             .Include(d => d.Customer)
@@ -80,7 +82,7 @@ public class DevicesController : ControllerBase
     [HttpGet("stats")]
     public async Task<IActionResult> GetStats()
     {
-        var onlineThreshold = DateTime.UtcNow.AddMinutes(-(_config.GetValue<int>("CheckinIntervalMinutes", 30) * 2 + 5));
+        var onlineThreshold = DateTime.UtcNow.AddMinutes(-(_runtimeSettings.CheckinIntervalMinutes * 2 + 5));
         var total = await _db.Devices.CountAsync();
         var online = await _db.Devices.CountAsync(d => d.LastSeenAt != null && d.LastSeenAt > onlineThreshold);
         var pending = await _db.PendingDevices.CountAsync(p => p.Status == PendingDeviceStatus.Pending);
@@ -120,7 +122,7 @@ public class DevicesController : ControllerBase
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> GetDevice(Guid id)
     {
-        var onlineThreshold = DateTime.UtcNow.AddMinutes(-(_config.GetValue<int>("CheckinIntervalMinutes", 30) * 2 + 5));
+        var onlineThreshold = DateTime.UtcNow.AddMinutes(-(_runtimeSettings.CheckinIntervalMinutes * 2 + 5));
 
         var device = await _db.Devices
             .Include(d => d.Customer)
@@ -146,6 +148,8 @@ public class DevicesController : ControllerBase
             device.Description = request.Description;
         device.CustomerId = request.CustomerId;
         device.GroupId = request.GroupId;
+        if (request.RustDeskId != null)
+            device.RustDeskId = request.RustDeskId;
 
         await _db.SaveChangesAsync();
         await _audit.LogAsync("device.update", "Device", id.ToString(), $"description={request.Description}");
@@ -293,12 +297,21 @@ public class DevicesController : ControllerBase
         if (device == null)
             return NotFound();
 
-        device.LicenseRequested = true;
+        var command = new DeviceCommand
+        {
+            DeviceId = id,
+            CommandType = CommandType.CollectLicense,
+            IssuedByUsername = User.Identity?.Name ?? "",
+            Status = CommandStatus.Pending
+        };
+        _db.DeviceCommands.Add(command);
         await _db.SaveChangesAsync();
+
+        _notifier.NotifyDevice(id);
 
         await _audit.LogAsync("license.request", "Device", id.ToString());
 
-        return Ok(new { message = "License key request queued. Waiting for agent check-in." });
+        return Ok(new { message = "License key request sent to agent." });
     }
 
     // GET /api/devices/{id}/license
@@ -307,7 +320,7 @@ public class DevicesController : ControllerBase
     {
         var license = await _db.LicenseInfos.FirstOrDefaultAsync(l => l.DeviceId == id);
         if (license == null)
-            return NotFound(new { message = "No license info available" });
+            return Ok((object?)null);
 
         await _audit.LogAsync("license.view", "Device", id.ToString());
 
@@ -442,6 +455,8 @@ public class DevicesController : ControllerBase
         _db.DeviceCommands.Add(command);
         await _db.SaveChangesAsync();
 
+        _notifier.NotifyDevice(id);
+
         await _audit.LogAsync("command.issue", "Device", id.ToString(),
             $"type={commandType}, params={request.Parameters}");
 
@@ -461,6 +476,7 @@ public class DevicesController : ControllerBase
         d.RamTotalGB,
         d.LastSeenAt,
         d.LicenseType,
+        d.RustDeskId,
         IsOnline = d.LastSeenAt.HasValue && d.LastSeenAt > onlineThreshold,
         Customer = d.Customer == null ? null : new { d.Customer.Id, d.Customer.Name },
         Group = d.Group == null ? null : new { d.Group.Id, d.Group.Name, d.Group.Color }
@@ -480,6 +496,8 @@ public class DevicesController : ControllerBase
         d.LastSeenAt,
         d.LicenseType,
         d.LicenseRequested,
+        d.RustDeskId,
+        d.AgentVersion,
         d.NetworkAdaptersJson,
         d.CreatedAt,
         IsOnline = d.LastSeenAt.HasValue && d.LastSeenAt > onlineThreshold,
@@ -494,7 +512,7 @@ public class DevicesController : ControllerBase
     };
 }
 
-public record PatchDeviceRequest(string? Description, Guid? CustomerId, Guid? GroupId);
+public record PatchDeviceRequest(string? Description, Guid? CustomerId, Guid? GroupId, string? RustDeskId = null);
 public record ApproveRequest(Guid? CustomerId, Guid? GroupId);
 public record BulkUpdateRequest(List<Guid> DeviceIds, Guid? SetCustomerId, Guid? SetGroupId);
 public record BulkDeleteRequest(List<Guid> DeviceIds);

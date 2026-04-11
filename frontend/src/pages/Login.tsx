@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Shield } from "lucide-react";
 import { auth } from "@/lib/api";
@@ -13,27 +13,40 @@ export function Login() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [setupMode, setSetupMode] = useState(false);
+  const [checkingSetup, setCheckingSetup] = useState(true);
+
+  useEffect(() => {
+    auth.setupRequired()
+      .then((data) => setSetupMode(data.required))
+      .catch(() => {})
+      .finally(() => setCheckingSetup(false));
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
     setLoading(true);
     try {
-      const data = await auth.login(username, password);
+      const data = setupMode
+        ? await auth.setup(username, password)
+        : await auth.login(username, password);
       localStorage.setItem("token", data.token);
       localStorage.setItem("username", data.username);
+      localStorage.setItem("role", data.role);
       navigate("/devices");
     } catch (err: any) {
-      setError(err.message || "Login fehlgeschlagen");
+      setError(err.message || (setupMode ? "Setup fehlgeschlagen" : "Login fehlgeschlagen"));
     } finally {
       setLoading(false);
     }
   };
 
+  if (checkingSetup) return null;
+
   return (
     <div className="flex min-h-screen items-center justify-center p-4">
       <div className="w-full max-w-sm space-y-6">
-        {/* Logo */}
         <div className="flex flex-col items-center gap-3">
           <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/20 ring-1 ring-primary/30">
             <Shield className="h-7 w-7 text-primary" />
@@ -46,8 +59,14 @@ export function Login() {
 
         <Card>
           <CardHeader className="pb-4">
-            <CardTitle className="text-base">Anmelden</CardTitle>
-            <CardDescription>Zugang zum Dashboard</CardDescription>
+            <CardTitle className="text-base">
+              {setupMode ? "Administrator einrichten" : "Anmelden"}
+            </CardTitle>
+            <CardDescription>
+              {setupMode
+                ? "Erstelle den ersten Administrator-Account"
+                : "Zugang zum Dashboard"}
+            </CardDescription>
           </CardHeader>
           <CardContent>
             <form onSubmit={handleSubmit} className="space-y-4">
@@ -70,14 +89,16 @@ export function Login() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••"
-                  autoComplete="current-password"
+                  autoComplete={setupMode ? "new-password" : "current-password"}
                 />
               </div>
               {error && (
                 <p className="text-sm text-destructive">{error}</p>
               )}
               <Button type="submit" className="w-full" disabled={loading}>
-                {loading ? "Anmelden..." : "Anmelden"}
+                {loading
+                  ? setupMode ? "Einrichten..." : "Anmelden..."
+                  : setupMode ? "Administrator erstellen" : "Anmelden"}
               </Button>
             </form>
           </CardContent>

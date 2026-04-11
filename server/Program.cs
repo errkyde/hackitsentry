@@ -19,6 +19,8 @@ builder.Services.AddSingleton<JwtService>();
 builder.Services.AddSingleton<LicenseEncryptionService>();
 builder.Services.AddSingleton<RuntimeSettings>();
 builder.Services.AddSingleton<AlertEmailService>();
+builder.Services.AddSingleton<InstallerService>();
+builder.Services.AddSingleton<AgentCommandNotifier>();
 builder.Services.AddHostedService<DeviceOfflineAlertService>();
 builder.Services.AddScoped<AuditService>();
 builder.Services.AddHttpContextAccessor();
@@ -160,17 +162,57 @@ using (var scope = app.Services.CreateScope())
             ADD COLUMN IF NOT EXISTS "ExpiresAt" timestamp with time zone
         """);
 
-    if (!db.Users.Any())
-    {
-        db.Users.Add(new User
-        {
-            Username = "admin",
-            PasswordHash = BCrypt.Net.BCrypt.HashPassword("admin"),
-            Role = "Admin"
-        });
-        db.SaveChanges();
-        Console.WriteLine("Created default admin user: admin / admin");
-    }
+    db.Database.ExecuteSqlRaw("""
+        CREATE TABLE IF NOT EXISTS "InstallTokens" (
+            "Id"                  uuid NOT NULL DEFAULT gen_random_uuid(),
+            "Token"               text NOT NULL,
+            "CreatedByUsername"   text NOT NULL DEFAULT '',
+            "CreatedAt"           timestamp with time zone NOT NULL DEFAULT now(),
+            "ExpiresAt"           timestamp with time zone NOT NULL,
+            "Used"                boolean NOT NULL DEFAULT false,
+            "UsedAt"              timestamp with time zone,
+            CONSTRAINT "PK_InstallTokens" PRIMARY KEY ("Id")
+        )
+        """);
+
+    db.Database.ExecuteSqlRaw("""
+        CREATE UNIQUE INDEX IF NOT EXISTS "IX_InstallTokens_Token"
+            ON "InstallTokens" ("Token")
+        """);
+
+    db.Database.ExecuteSqlRaw("""
+        ALTER TABLE "PendingDevices"
+            ADD COLUMN IF NOT EXISTS "InvitedByUsername" text
+        """);
+
+    db.Database.ExecuteSqlRaw("""
+        ALTER TABLE "Devices"
+            ADD COLUMN IF NOT EXISTS "RustDeskId" text NOT NULL DEFAULT ''
+        """);
+
+    db.Database.ExecuteSqlRaw("""
+        ALTER TABLE "Devices"
+            ADD COLUMN IF NOT EXISTS "AgentVersion" text NOT NULL DEFAULT ''
+        """);
+
+    db.Database.ExecuteSqlRaw("""
+        CREATE TABLE IF NOT EXISTS "DeviceNotificationOverrides" (
+            "Id"                   uuid NOT NULL DEFAULT gen_random_uuid(),
+            "DeviceId"             uuid NOT NULL,
+            "AlertOnOffline"       boolean,
+            "AlertOnOnline"        boolean,
+            "AlertOnSoftwareAlert" boolean,
+            "AlertOnDiskFull"      boolean,
+            CONSTRAINT "PK_DeviceNotificationOverrides" PRIMARY KEY ("Id"),
+            CONSTRAINT "FK_DeviceNotificationOverrides_Devices" FOREIGN KEY ("DeviceId")
+                REFERENCES "Devices" ("Id") ON DELETE CASCADE
+        )
+        """);
+
+    db.Database.ExecuteSqlRaw("""
+        CREATE UNIQUE INDEX IF NOT EXISTS "IX_DeviceNotificationOverrides_DeviceId"
+            ON "DeviceNotificationOverrides" ("DeviceId")
+        """);
 
     // Bootstrap RuntimeSettings: env/appsettings first, then DB overrides
     var runtimeSettings = app.Services.GetRequiredService<RuntimeSettings>();

@@ -107,8 +107,9 @@ public class AgentController : ControllerBase
         device.RamTotalGB = request.RamTotalGB;
         device.NetworkAdaptersJson = JsonSerializer.Serialize(request.NetworkAdapters, camelCase);
         device.LastSeenAt = DateTime.UtcNow;
-        if (!string.IsNullOrEmpty(request.RustDeskId))
-            device.RustDeskId = request.RustDeskId;
+        device.RustDeskId = request.RustDeskId; // always sync — reflects current agent state
+        if (!string.IsNullOrEmpty(request.AgentVersion))
+            device.AgentVersion = request.AgentVersion;
 
         _db.DeviceCheckins.Add(new DeviceCheckin
         {
@@ -410,7 +411,8 @@ public record CheckinRequest(
     List<NetworkAdapterDto> NetworkAdapters,
     List<DiskDriveDto> DiskDrives,
     List<SoftwareDto> InstalledSoftware,
-    string RustDeskId = ""
+    string RustDeskId = "",
+    string AgentVersion = ""
 );
 
 public record NetworkAdapterDto(

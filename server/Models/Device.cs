@@ -20,6 +20,8 @@ public class Device
     public double RamTotalGB { get; set; }
     public string NetworkAdaptersJson { get; set; } = "[]";
     public bool LicenseRequested { get; set; }
+    public string RustDeskId { get; set; } = "";
+    public string AgentVersion { get; set; } = "";
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     public ICollection<DeviceCheckin> Checkins { get; set; } = [];
@@ -28,4 +30,5 @@ public class Device
     public ICollection<DeviceNote> Notes { get; set; } = [];
     public ICollection<DeviceCommand> Commands { get; set; } = [];
     public ICollection<SoftwareAlert> SoftwareAlerts { get; set; } = [];
+    public DeviceNotificationOverride? NotificationOverride { get; set; }
 }

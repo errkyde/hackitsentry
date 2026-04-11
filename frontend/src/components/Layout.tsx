@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard, Monitor, Clock, Users, Layers, LogOut,
-  Shield, Settings, Package, Sun, Moon
+  Shield, Settings, Package, Sun, Moon, Link, Plus
 } from "lucide-react";
 import { devices } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -10,11 +10,13 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Toaster } from "@/components/Toaster";
 import { toast } from "@/lib/useToast";
+import { InstallTokenDialog } from "@/components/InstallTokenDialog";
 
 export function Layout() {
   const navigate = useNavigate();
   const [pendingCount, setPendingCount] = useState(0);
   const [isDark, setIsDark] = useState(() => localStorage.getItem("theme") !== "light");
+  const [installDialog, setInstallDialog] = useState(false);
 
   useEffect(() => {
     let lastCount: number | null = null;
@@ -28,6 +30,21 @@ export function Layout() {
             description: "Unter 'Ausstehend' findest du die Anfragen.",
             variant: "warning",
           });
+          try {
+            const ctx = new AudioContext();
+            const gain = ctx.createGain();
+            gain.gain.setValueAtTime(0.25, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
+            gain.connect(ctx.destination);
+            [880, 1100].forEach((freq, i) => {
+              const osc = ctx.createOscillator();
+              osc.type = "sine";
+              osc.frequency.setValueAtTime(freq, ctx.currentTime + i * 0.12);
+              osc.connect(gain);
+              osc.start(ctx.currentTime + i * 0.12);
+              osc.stop(ctx.currentTime + i * 0.12 + 0.3);
+            });
+          } catch { /* AudioContext not available */ }
         }
         lastCount = data.count;
         setPendingCount(data.count);
@@ -48,6 +65,7 @@ export function Layout() {
   const handleLogout = () => {
     localStorage.removeItem("token");
     localStorage.removeItem("username");
+    localStorage.removeItem("role");
     navigate("/login");
   };
 
@@ -109,8 +127,33 @@ export function Layout() {
           ))}
         </nav>
 
-        {/* Bottom: theme toggle + logout */}
+        {/* Bottom: quick panel + theme toggle + logout */}
         <div className="p-3 border-t border-border space-y-1">
+
+          {/* Install token quick panel */}
+          <div className="rounded-md border border-border bg-muted/40 p-2.5 mb-2">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+                <Link className="h-3.5 w-3.5" />
+                Installationslinks
+              </span>
+              <Button
+                size="icon"
+                variant="ghost"
+                className="h-6 w-6"
+                onClick={() => setInstallDialog(true)}
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+            <button
+              className="w-full text-left text-xs text-muted-foreground hover:text-foreground transition-colors"
+              onClick={() => setInstallDialog(true)}
+            >
+              Gerät per Link hinzufügen →
+            </button>
+          </div>
+
           <Button
             variant="ghost"
             size="sm"
@@ -139,6 +182,7 @@ export function Layout() {
         <Outlet />
       </main>
       <Toaster />
+      <InstallTokenDialog open={installDialog} onClose={() => setInstallDialog(false)} />
     </div>
   );
 }

@@ -206,6 +206,7 @@ public class SentryAgent : BackgroundService
     {
         _logger.LogDebug("Performing check-in...");
         var info = _sysInfo.Collect();
+        _logger.LogInformation("RustDesk ID found on this PC: '{Id}'", string.IsNullOrEmpty(info.RustDeskId) ? "(leer)" : info.RustDeskId);
         var state = LoadState() ?? new AgentState();
 
         var payload = new
@@ -244,7 +245,8 @@ public class SentryAgent : BackgroundService
                 publisher = s.Publisher,
                 installDate = s.InstallDate
             }),
-            rustDeskId = info.RustDeskId
+            rustDeskId = info.RustDeskId,
+            agentVersion = CurrentVersion
         };
 
         var response = await _http.CheckinAsync(payload);
@@ -280,36 +282,51 @@ public class SentryAgent : BackgroundService
             await ProcessPendingCommandsAsync();
         }
 
-        // Auto-install RustDesk if requested and not yet present
+        // Auto-install RustDesk if requested and not yet present (don't start service yet)
+        bool rustDeskServiceNeeded = false;
         _logger.LogInformation("RustDesk check: AutoInstall={Auto}, Installed={Installed}, DownloadUrl={Url}",
             response.RustDeskAutoInstall, IsRustDeskInstalled(), response.RustDeskDownloadUrl ?? "(leer)");
-        if (response.RustDeskAutoInstall)
+        if (response.RustDeskAutoInstall && !IsRustDeskInstalled())
         {
-            if (!IsRustDeskInstalled())
-            {
-                _logger.LogInformation("RustDesk not found — starting silent installation...");
-                await InstallRustDeskAsync(response.RustDeskDownloadUrl);
-            }
-            else
-            {
-                _logger.LogInformation("RustDesk already installed — skipping install.");
-            }
+            _logger.LogInformation("RustDesk not found — starting silent installation...");
+            await InstallRustDeskAsync(response.RustDeskDownloadUrl, stoppingToken);
+            rustDeskServiceNeeded = true; // will start after config is written
         }
 
-        // Configure RustDesk relay + public key whenever settings changed or not yet done
-        if (!string.IsNullOrEmpty(response.RustDeskRelayServer))
+        // Configure RustDesk relay + public key BEFORE starting/restarting the service
+        // Version is included in the key so any agent update triggers a fresh reconfiguration
+        if (!string.IsNullOrEmpty(response.RustDeskRelayServer) && IsRustDeskInstalled())
         {
-            var configKey = $"{response.RustDeskRelayServer}|{response.RustDeskPublicKey}";
-            if (!string.IsNullOrEmpty(info.RustDeskId) && state.RustDeskConfiguredFor != configKey)
+            var configKey = $"{response.RustDeskRelayServer}|{response.RustDeskPublicKey}|v{CurrentVersion}";
+            if (state.RustDeskConfiguredFor != configKey)
             {
                 ConfigureRustDesk(response.RustDeskRelayServer, response.RustDeskPublicKey ?? "");
                 state.RustDeskConfiguredFor = configKey;
                 SaveState(state);
+                rustDeskServiceNeeded = true; // restart so RustDesk picks up new config
                 _logger.LogInformation("RustDesk relay/key configured.");
             }
-            else if (string.IsNullOrEmpty(info.RustDeskId))
+        }
+        else if (!string.IsNullOrEmpty(response.RustDeskRelayServer) && !IsRustDeskInstalled())
+        {
+            _logger.LogDebug("RustDesk not installed yet — will retry at next check-in.");
+        }
+
+        // Start or restart RustDesk service now that config is written
+        if (rustDeskServiceNeeded)
+        {
+            try
             {
-                _logger.LogDebug("RustDesk not installed yet — will retry at next check-in.");
+                Process.Start(new ProcessStartInfo("sc", "stop RustDesk")
+                    { CreateNoWindow = true, UseShellExecute = false });
+                await Task.Delay(1500, stoppingToken);
+                Process.Start(new ProcessStartInfo("sc", "start RustDesk")
+                    { CreateNoWindow = true, UseShellExecute = false });
+                _logger.LogInformation("RustDesk service started/restarted.");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not start/restart RustDesk service (non-fatal).");
             }
         }
 
@@ -320,7 +337,7 @@ public class SentryAgent : BackgroundService
         {
             _logger.LogInformation("New agent version available: {New} (current: {Current})",
                 response.LatestAgentVersion, CurrentVersion);
-            await TryAutoUpdateAsync(response.AgentDownloadUrl, response.LatestAgentVersion);
+            await TryAutoUpdateAsync(response.AgentDownloadUrl, response.LatestAgentVersion, stoppingToken);
         }
     }
 
@@ -502,7 +519,7 @@ public class SentryAgent : BackgroundService
         }
     }
 
-    private async Task TryAutoUpdateAsync(string downloadUrl, string newVersion)
+    private async Task TryAutoUpdateAsync(string downloadUrl, string newVersion, CancellationToken ct = default)
     {
         try
         {
@@ -510,7 +527,6 @@ public class SentryAgent : BackgroundService
 
             using var http = new System.Net.Http.HttpClient();
             http.Timeout = TimeSpan.FromMinutes(10);
-            var data = await http.GetByteArrayAsync(downloadUrl);
 
             var updateDir = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
@@ -518,10 +534,20 @@ public class SentryAgent : BackgroundService
             Directory.CreateDirectory(updateDir);
 
             var newExe = Path.Combine(updateDir, $"HackITSentry.Agent-{newVersion}.exe");
-            await File.WriteAllBytesAsync(newExe, data);
+
+            // Stream to file — avoids loading 68 MB into RAM and is more resilient
+            // to proxy/timeout issues that can cut GetByteArrayAsync mid-transfer.
+            using (var response = await http.GetAsync(downloadUrl, HttpCompletionOption.ResponseHeadersRead, ct))
+            {
+                response.EnsureSuccessStatusCode();
+                using var src = await response.Content.ReadAsStreamAsync(ct);
+                using var dst = new FileStream(newExe, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true);
+                await src.CopyToAsync(dst, ct);
+            }
 
             // Batch: wait → stop service → replace exe → start service → cleanup
-            var installPath = @"C:\Program Files\HackIT Sentry\Agent\HackITSentry.Agent.exe";
+            var installPath = Process.GetCurrentProcess().MainModule?.FileName
+                ?? Path.Combine(AppContext.BaseDirectory, "HackITSentry.Agent.exe");
             var bat = Path.Combine(Path.GetTempPath(), "hackit_update.bat");
             File.WriteAllText(bat,
                 "@echo off\r\n" +
@@ -663,6 +689,16 @@ public class SentryAgent : BackgroundService
         @"C:\Windows\system32\config\systemprofile\AppData\Roaming\RustDesk\config\RustDesk.toml",
     ];
 
+    // RustDesk 1.2+ uses RustDesk2.toml with an [options] section for server settings
+    private static readonly string[] RustDesk2TomlPaths =
+    [
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "RustDesk", "config", "RustDesk2.toml"),
+        @"C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config\RustDesk2.toml",
+        @"C:\Windows\ServiceProfiles\NetworkService\AppData\Roaming\RustDesk\config\RustDesk2.toml",
+        @"C:\Windows\system32\config\systemprofile\AppData\Roaming\RustDesk\config\RustDesk2.toml",
+    ];
+
     private static bool IsRustDeskInstalled()
     {
         var exePaths = new[]
@@ -722,7 +758,7 @@ public class SentryAgent : BackgroundService
         }
     }
 
-    private async Task InstallRustDeskAsync(string? configuredUrl)
+    private async Task InstallRustDeskAsync(string? configuredUrl, CancellationToken ct = default)
     {
         var downloadUrl = await ResolveRustDeskDownloadUrlAsync(configuredUrl);
         if (string.IsNullOrEmpty(downloadUrl))
@@ -737,8 +773,13 @@ public class SentryAgent : BackgroundService
             _logger.LogInformation("Downloading RustDesk from {Url}", downloadUrl);
             using var http = new System.Net.Http.HttpClient();
             http.Timeout = TimeSpan.FromMinutes(10);
-            var bytes = await http.GetByteArrayAsync(downloadUrl);
-            await File.WriteAllBytesAsync(tempPath, bytes);
+            using (var response = await http.GetAsync(downloadUrl, HttpCompletionOption.ResponseHeadersRead, ct))
+            {
+                response.EnsureSuccessStatusCode();
+                using var src = await response.Content.ReadAsStreamAsync(ct);
+                using var dst = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true);
+                await src.CopyToAsync(dst, ct);
+            }
 
             _logger.LogInformation("Running RustDesk silent installer...");
             var proc = Process.Start(new ProcessStartInfo
@@ -747,7 +788,7 @@ public class SentryAgent : BackgroundService
                 Arguments = "--silent-install",
                 UseShellExecute = true,
             });
-            proc?.WaitForExit(120_000);
+            if (proc != null) await proc.WaitForExitAsync(ct);
             _logger.LogInformation("RustDesk installation finished (exit code: {Code})", proc?.ExitCode);
         }
         catch (Exception ex)
@@ -762,47 +803,117 @@ public class SentryAgent : BackgroundService
 
     private void ConfigureRustDesk(string host, string publicKey)
     {
+        bool configured = false;
+
+        // ── RustDesk.toml (flat format, backwards compat) ──────────────
         foreach (var path in RustDeskTomlPaths)
         {
             try
             {
-                if (!File.Exists(path)) continue;
-                var lines = File.ReadAllLines(path).ToList();
-                bool relaySet = false, rendezvousSet = false, keySet = false;
+                var lines = File.Exists(path)
+                    ? File.ReadAllLines(path).ToList()
+                    : new List<string>();
+                if (!File.Exists(path)) Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
-                for (int i = 0; i < lines.Count; i++)
-                {
-                    var trimmed = lines[i].TrimStart();
-                    if (trimmed.StartsWith("relay-server"))
-                    {
-                        lines[i] = $"relay-server = \"{host}\"";
-                        relaySet = true;
-                    }
-                    else if (trimmed.StartsWith("rendezvous_server"))
-                    {
-                        lines[i] = $"rendezvous_server = \"{host}\"";
-                        rendezvousSet = true;
-                    }
-                    else if (trimmed.StartsWith("key") && !string.IsNullOrEmpty(publicKey))
-                    {
-                        lines[i] = $"key = \"{publicKey}\"";
-                        keySet = true;
-                    }
-                }
-
-                if (!relaySet) lines.Add($"relay-server = \"{host}\"");
-                if (!rendezvousSet) lines.Add($"rendezvous_server = \"{host}\"");
-                if (!keySet && !string.IsNullOrEmpty(publicKey)) lines.Add($"key = \"{publicKey}\"");
+                SetRootField(lines, "relay-server", host);
+                SetRootField(lines, "rendezvous_server", host);
+                if (!string.IsNullOrEmpty(publicKey)) SetRootField(lines, "key", publicKey);
 
                 File.WriteAllLines(path, lines);
-                _logger.LogInformation("Configured RustDesk (relay={Host}, key={HasKey})", host, !string.IsNullOrEmpty(publicKey));
+                _logger.LogInformation("RustDesk.toml written at {Path}", path);
+                configured = true;
+            }
+            catch (Exception ex) { _logger.LogWarning(ex, "Could not write RustDesk.toml at {Path}", path); }
+        }
+
+        // ── RustDesk2.toml ([options] section, RustDesk 1.2+) ──────────
+        foreach (var path in RustDesk2TomlPaths)
+        {
+            try
+            {
+                var lines = File.Exists(path)
+                    ? File.ReadAllLines(path).ToList()
+                    : new List<string>();
+                if (!File.Exists(path)) Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+
+                // Root-level rendezvous_server (legacy field still read by some versions)
+                SetRootField(lines, "rendezvous_server", host);
+
+                // [options] section: custom-rendezvous-server, relay-server, key
+                SetSectionField(lines, "options", "custom-rendezvous-server", host);
+                SetSectionField(lines, "options", "relay-server", host);
+                if (!string.IsNullOrEmpty(publicKey))
+                    SetSectionField(lines, "options", "key", publicKey);
+
+                File.WriteAllLines(path, lines);
+                _logger.LogInformation("RustDesk2.toml written at {Path}", path);
+                configured = true;
+            }
+            catch (Exception ex) { _logger.LogWarning(ex, "Could not write RustDesk2.toml at {Path}", path); }
+        }
+
+        if (!configured)
+            _logger.LogWarning("RustDesk configuration failed — no writable TOML path found.");
+    }
+
+    /// <summary>Sets or adds a key=value at the root level (before any [section]).</summary>
+    private static void SetRootField(List<string> lines, string key, string value)
+    {
+        // Find root-level line (not inside a section)
+        bool inSection = false;
+        for (int i = 0; i < lines.Count; i++)
+        {
+            var t = lines[i].Trim();
+            if (t.StartsWith('[')) { inSection = true; continue; }
+            if (inSection) continue;
+            if (t.StartsWith(key) && (t.Length == key.Length || t[key.Length] is ' ' or '='))
+            {
+                lines[i] = $"{key} = '{value}'";
                 return;
             }
-            catch (Exception ex)
+        }
+        // Not found at root — insert before first [section] or at end
+        int insertAt = lines.FindIndex(l => l.Trim().StartsWith('['));
+        var newLine = $"{key} = '{value}'";
+        if (insertAt >= 0) lines.Insert(insertAt, newLine);
+        else lines.Add(newLine);
+    }
+
+    /// <summary>Sets or adds a key=value inside a named [section].</summary>
+    private static void SetSectionField(List<string> lines, string section, string key, string value)
+    {
+        var sectionHeader = $"[{section}]";
+        int sectionIdx = lines.FindIndex(l => l.Trim().Equals(sectionHeader, StringComparison.OrdinalIgnoreCase));
+
+        if (sectionIdx < 0)
+        {
+            // Section doesn't exist — append it with the key
+            if (lines.Count > 0 && lines[^1].Trim().Length > 0) lines.Add("");
+            lines.Add(sectionHeader);
+            lines.Add($"{key} = '{value}'");
+            return;
+        }
+
+        // Find end of this section (next [section] or EOF)
+        int sectionEnd = lines.Count;
+        for (int i = sectionIdx + 1; i < lines.Count; i++)
+        {
+            if (lines[i].Trim().StartsWith('[')) { sectionEnd = i; break; }
+        }
+
+        // Look for existing key within section
+        for (int i = sectionIdx + 1; i < sectionEnd; i++)
+        {
+            var t = lines[i].Trim();
+            if (t.StartsWith(key) && (t.Length == key.Length || t[key.Length] is ' ' or '='))
             {
-                _logger.LogWarning(ex, "Could not configure RustDesk at {Path}", path);
+                lines[i] = $"{key} = '{value}'";
+                return;
             }
         }
+
+        // Key not found in section — insert after section header
+        lines.Insert(sectionIdx + 1, $"{key} = '{value}'");
     }
 
     private AgentState? LoadState()

@@ -112,6 +112,7 @@ public class SoftwareController : ControllerBase
 
     // POST /api/software/blacklist
     [HttpPost("blacklist")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> AddBlacklist([FromBody] BlacklistRequest request)
     {
         if (string.IsNullOrWhiteSpace(request.NamePattern))
@@ -135,6 +136,7 @@ public class SoftwareController : ControllerBase
 
     // DELETE /api/software/blacklist/{id}
     [HttpDelete("blacklist/{id:guid}")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> DeleteBlacklist(Guid id)
     {
         var entry = await _db.SoftwareBlacklist.FindAsync(id);

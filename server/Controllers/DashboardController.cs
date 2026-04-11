@@ -1,5 +1,6 @@
 using HackITSentry.Server.Data;
 using HackITSentry.Server.Models;
+using HackITSentry.Server.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -12,19 +13,19 @@ namespace HackITSentry.Server.Controllers;
 public class DashboardController : ControllerBase
 {
     private readonly AppDbContext _db;
-    private readonly IConfiguration _config;
+    private readonly RuntimeSettings _runtimeSettings;
 
-    public DashboardController(AppDbContext db, IConfiguration config)
+    public DashboardController(AppDbContext db, RuntimeSettings runtimeSettings)
     {
         _db = db;
-        _config = config;
+        _runtimeSettings = runtimeSettings;
     }
 
     // GET /api/dashboard
     [HttpGet]
     public async Task<IActionResult> GetDashboard()
     {
-        var onlineThreshold = DateTime.UtcNow.AddMinutes(-(_config.GetValue<int>("CheckinIntervalMinutes", 30) * 2 + 5));
+        var onlineThreshold = DateTime.UtcNow.AddMinutes(-(_runtimeSettings.CheckinIntervalMinutes * 2 + 5));
         var now = DateTime.UtcNow;
         var soonThreshold = now.AddDays(30);
 

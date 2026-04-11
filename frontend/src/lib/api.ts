@@ -43,6 +43,18 @@ export const users = {
     request(`/api/users/${id}`, { method: "DELETE" }),
 };
 
+// Notifications
+export const notifications = {
+  getDefaults: () => request<NotificationDefaults>("/api/settings/notifications"),
+  saveDefaults: (data: NotificationDefaults) =>
+    request<{ message: string }>("/api/settings/notifications", { method: "PUT", body: JSON.stringify(data) }),
+  getDeviceOverrides: () => request<DeviceNotificationOverride[]>("/api/settings/notifications/devices"),
+  upsertDeviceOverride: (data: { deviceId: string; alertOnOffline: boolean | null; alertOnOnline: boolean | null; alertOnSoftwareAlert: boolean | null; alertOnDiskFull: boolean | null }) =>
+    request<{ message: string }>("/api/settings/notifications/devices", { method: "POST", body: JSON.stringify(data) }),
+  deleteDeviceOverride: (deviceId: string) =>
+    request(`/api/settings/notifications/devices/${deviceId}`, { method: "DELETE" }),
+};
+
 // Settings
 export const settings = {
   get: () => request<{ checkinIntervalMinutes: number }>("/api/settings"),
@@ -218,6 +230,7 @@ export interface Device {
 export interface DeviceDetail extends Device {
   networkAdaptersJson: string;
   licenseRequested: boolean;
+  agentVersion: string;
   createdAt: string;
   recentCheckins: Array<{
     checkedInAt: string;
@@ -423,6 +436,23 @@ export const installTokens = {
       body: JSON.stringify({ email }),
     }),
 };
+
+export interface NotificationDefaults {
+  deviceOffline: boolean;
+  deviceOnline: boolean;
+  newPending: boolean;
+  softwareAlert: boolean;
+  diskFull: boolean;
+}
+
+export interface DeviceNotificationOverride {
+  id: string;
+  device: { id: string; hostname: string; description: string; customer: { id: string; name: string } | null };
+  alertOnOffline: boolean | null;
+  alertOnOnline: boolean | null;
+  alertOnSoftwareAlert: boolean | null;
+  alertOnDiskFull: boolean | null;
+}
 
 export interface DashboardData {
   devices: { total: number; online: number; offline: number; pending: number };

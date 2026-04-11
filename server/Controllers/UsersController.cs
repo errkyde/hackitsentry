@@ -8,7 +8,7 @@ namespace HackITSentry.Server.Controllers;
 
 [ApiController]
 [Route("api/users")]
-[Authorize]
+[Authorize(Roles = "Admin")]
 public class UsersController : ControllerBase
 {
     private readonly AppDbContext _db;
@@ -37,11 +37,13 @@ public class UsersController : ControllerBase
         if (request.Password.Length < 6)
             return BadRequest(new { message = "Passwort muss mindestens 6 Zeichen lang sein" });
 
+        var role = request.Role == "Admin" ? "Admin" : "User";
+
         var user = new User
         {
             Username = request.Username,
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(request.Password),
-            Role = "Admin"
+            Role = role
         };
         _db.Users.Add(user);
         _db.SaveChanges();
@@ -86,5 +88,5 @@ public class UsersController : ControllerBase
     }
 }
 
-public record CreateUserRequest(string Username, string Password);
+public record CreateUserRequest(string Username, string Password, string? Role = null);
 public record ResetPasswordRequest(string NewPassword);

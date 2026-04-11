@@ -8,7 +8,6 @@ public class DeviceOfflineAlertService : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly AlertEmailService _email;
     private readonly RuntimeSettings _settings;
-    private readonly IConfiguration _config;
     private readonly ILogger<DeviceOfflineAlertService> _logger;
 
     private readonly HashSet<Guid> _knownOffline = [];
@@ -17,13 +16,11 @@ public class DeviceOfflineAlertService : BackgroundService
         IServiceScopeFactory scopeFactory,
         AlertEmailService email,
         RuntimeSettings settings,
-        IConfiguration config,
         ILogger<DeviceOfflineAlertService> logger)
     {
         _scopeFactory = scopeFactory;
         _email = email;
         _settings = settings;
-        _config = config;
         _logger = logger;
     }
 
@@ -37,7 +34,7 @@ public class DeviceOfflineAlertService : BackgroundService
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            var intervalMinutes = _config.GetValue<int>("CheckinIntervalMinutes", 30);
+            var intervalMinutes = _settings.CheckinIntervalMinutes;
             await Task.Delay(TimeSpan.FromMinutes(intervalMinutes), stoppingToken);
 
             if (_settings.IsEmailConfigured)
@@ -76,11 +73,19 @@ public class DeviceOfflineAlertService : BackgroundService
             using var scope = _scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
             var threshold = GetOnlineThreshold();
-            var intervalMinutes = _config.GetValue<int>("CheckinIntervalMinutes", 30);
+            var intervalMinutes = _settings.CheckinIntervalMinutes;
 
             var devices = await db.Devices
                 .Include(d => d.Customer)
-                .Select(d => new { d.Id, d.Hostname, d.LastSeenAt, CustomerName = d.Customer != null ? d.Customer.Name : null })
+                .Include(d => d.NotificationOverride)
+                .Select(d => new
+                {
+                    d.Id,
+                    d.Hostname,
+                    d.LastSeenAt,
+                    CustomerName = d.Customer != null ? d.Customer.Name : null,
+                    Override = d.NotificationOverride
+                })
                 .ToListAsync();
 
             var newlyOffline = new List<(string Hostname, string? Customer, DateTime? LastSeen)>();
@@ -89,37 +94,54 @@ public class DeviceOfflineAlertService : BackgroundService
             foreach (var device in devices)
             {
                 var isOffline = device.LastSeenAt == null || device.LastSeenAt <= threshold;
+                var notifyOffline = device.Override?.AlertOnOffline ?? _settings.NotifyDeviceOffline;
+                var notifyOnline = device.Override?.AlertOnOnline ?? _settings.NotifyDeviceOnline;
+
                 if (isOffline && _knownOffline.Add(device.Id))
-                    newlyOffline.Add((device.Hostname, device.CustomerName, device.LastSeenAt));
+                {
+                    if (notifyOffline)
+                        newlyOffline.Add((device.Hostname, device.CustomerName, device.LastSeenAt));
+                }
                 if (!isOffline && _knownOffline.Remove(device.Id))
-                    recovered.Add((device.Hostname, device.CustomerName));
+                {
+                    if (notifyOnline)
+                        recovered.Add((device.Hostname, device.CustomerName));
+                }
             }
 
             if (newlyOffline.Count > 0)
             {
-                var lines = newlyOffline.Select(d =>
-                    $"  • {d.Hostname}" +
-                    (d.Customer != null ? $" ({d.Customer})" : "") +
-                    (d.LastSeen.HasValue ? $" – last seen {d.LastSeen:yyyy-MM-dd HH:mm} UTC" : " – never seen"));
+                var rows = newlyOffline.Select(d => (
+                    d.Hostname,
+                    d.Customer != null ? $"Kunde: {d.Customer}" : (string?)null,
+                    d.LastSeen.HasValue ? $"Zuletzt gesehen: {d.LastSeen:dd.MM.yyyy HH:mm} UTC" : "Noch nie gesehen"
+                ));
 
                 await _email.SendAsync(
-                    $"[HackIT Sentry] {newlyOffline.Count} device(s) went offline",
-                    $"The following device(s) have gone offline:\n\n{string.Join("\n", lines)}\n\n" +
-                    $"Checked at: {DateTime.UtcNow:yyyy-MM-dd HH:mm} UTC\n" +
-                    $"Online threshold: last check-in within {intervalMinutes * 2 + 5} minutes");
+                    $"[HackIT Sentry] {newlyOffline.Count} Gerät(e) offline",
+                    AlertEmailService.BuildHtml(
+                        "#dc2626", "Offline-Alert",
+                        $"{newlyOffline.Count} Gerät{(newlyOffline.Count == 1 ? "" : "e")} nicht mehr erreichbar",
+                        AlertEmailService.DeviceRows(rows),
+                        $"Schwellwert: kein Check-in innerhalb von {intervalMinutes * 2 + 5} Minuten"));
 
                 _logger.LogWarning("Offline alert sent: {Count} device(s).", newlyOffline.Count);
             }
 
             if (recovered.Count > 0)
             {
-                var lines = recovered.Select(d =>
-                    $"  • {d.Hostname}" + (d.Customer != null ? $" ({d.Customer})" : ""));
+                var rows = recovered.Select(d => (
+                    d.Hostname,
+                    d.Customer != null ? $"Kunde: {d.Customer}" : (string?)null,
+                    (string?)"Wieder online"
+                ));
 
                 await _email.SendAsync(
-                    $"[HackIT Sentry] {recovered.Count} device(s) recovered",
-                    $"The following device(s) are back online:\n\n{string.Join("\n", lines)}\n\n" +
-                    $"Recovered at: {DateTime.UtcNow:yyyy-MM-dd HH:mm} UTC");
+                    $"[HackIT Sentry] {recovered.Count} Gerät(e) wieder online",
+                    AlertEmailService.BuildHtml(
+                        "#16a34a", "Wieder online",
+                        $"{recovered.Count} Gerät{(recovered.Count == 1 ? "" : "e")} wieder erreichbar",
+                        AlertEmailService.DeviceRows(rows)));
 
                 _logger.LogInformation("Recovery alert sent: {Count} device(s).", recovered.Count);
             }
@@ -131,5 +153,5 @@ public class DeviceOfflineAlertService : BackgroundService
     }
 
     private DateTime GetOnlineThreshold() =>
-        DateTime.UtcNow.AddMinutes(-(_config.GetValue<int>("CheckinIntervalMinutes", 30) * 2 + 5));
+        DateTime.UtcNow.AddMinutes(-(_settings.CheckinIntervalMinutes * 2 + 5));
 }

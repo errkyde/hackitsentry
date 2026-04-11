@@ -2,12 +2,13 @@ import { useEffect, useState, useCallback } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Search, ChevronRight, RefreshCw, Monitor, Wifi, WifiOff, Clock,
-  Download, Trash2, Users, Layers, X
+  Download, Trash2, Users, Layers, X, Link, MonitorCheck
 } from "lucide-react";
 import {
   devices, customers, groups,
   type Device, type Customer, type Group
 } from "@/lib/api";
+import { InstallTokenDialog } from "@/components/InstallTokenDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -52,6 +53,7 @@ export function Devices() {
   const [bulkAssignValue, setBulkAssignValue] = useState("none");
   const [bulkDeleteDialog, setBulkDeleteDialog] = useState(false);
   const [bulkLoading, setBulkLoading] = useState(false);
+  const [installDialog, setInstallDialog] = useState(false);
 
   const fetchDevices = useCallback(async () => {
     const params: Record<string, string> = {};
@@ -159,6 +161,10 @@ export function Devices() {
           </p>
         </div>
         <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={() => setInstallDialog(true)}>
+            <Link className="h-3.5 w-3.5 mr-1.5" />
+            Gerät hinzufügen
+          </Button>
           <Button variant="outline" size="sm" onClick={exportCsv} disabled={deviceList.length === 0}>
             <Download className="h-3.5 w-3.5 mr-1.5" />
             CSV
@@ -310,7 +316,12 @@ export function Devices() {
                     <StatusBadge online={device.isOnline} />
                   </td>
                   <td className="px-4 py-3">
-                    <div className="font-medium">{device.hostname}</div>
+                    <div className="font-medium flex items-center gap-1.5">
+                      {device.hostname}
+                      {device.rustDeskId && (
+                        <span title={`RustDesk: ${device.rustDeskId}`}><MonitorCheck className="h-3.5 w-3.5 text-blue-500 shrink-0" /></span>
+                      )}
+                    </div>
                     {device.description && (
                       <div className="text-xs text-muted-foreground">{device.description}</div>
                     )}
@@ -416,6 +427,8 @@ export function Devices() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <InstallTokenDialog open={installDialog} onClose={() => setInstallDialog(false)} />
     </div>
   );
 }

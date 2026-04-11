@@ -22,6 +22,8 @@ public class AppDbContext : DbContext
     public DbSet<SoftwareBlacklistEntry> SoftwareBlacklist { get; set; }
     public DbSet<SoftwareAlert> SoftwareAlerts { get; set; }
     public DbSet<AgentVersion> AgentVersions { get; set; }
+    public DbSet<InstallToken> InstallTokens { get; set; }
+    public DbSet<DeviceNotificationOverride> DeviceNotificationOverrides { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -80,6 +82,12 @@ public class AppDbContext : DbContext
             .HasOne(a => a.BlacklistEntry)
             .WithMany()
             .HasForeignKey(a => a.BlacklistEntryId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<DeviceNotificationOverride>()
+            .HasOne(o => o.Device)
+            .WithOne(d => d.NotificationOverride)
+            .HasForeignKey<DeviceNotificationOverride>(o => o.DeviceId)
             .OnDelete(DeleteBehavior.Cascade);
 
         modelBuilder.Entity<Device>()

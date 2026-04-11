@@ -7,7 +7,7 @@ namespace HackITSentry.Server.Controllers;
 
 [ApiController]
 [Route("api/audit")]
-[Authorize]
+[Authorize(Roles = "Admin")]
 public class AuditController : ControllerBase
 {
     private readonly AppDbContext _db;

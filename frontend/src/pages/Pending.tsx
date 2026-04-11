@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Clock, Check, X, Cpu, MemoryStick, Monitor } from "lucide-react";
+import { Clock, Check, X, Cpu, MemoryStick, Monitor, UserPlus, RefreshCw } from "lucide-react";
 import { devices, customers, groups, type PendingDevice, type Customer, type Group } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,6 +14,7 @@ export function Pending() {
   const [customerList, setCustomerList] = useState<Customer[]>([]);
   const [groupList, setGroupList] = useState<Group[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
   // Approve dialog
   const [approveDialog, setApproveDialog] = useState<{ id: string; hostname: string } | null>(null);
@@ -34,7 +35,15 @@ export function Pending() {
 
   useEffect(() => {
     fetchAll().finally(() => setLoading(false));
+    const interval = setInterval(() => fetchAll(), 30_000);
+    return () => clearInterval(interval);
   }, []);
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    await fetchAll().catch(() => {});
+    setRefreshing(false);
+  };
 
   const handleApprove = async () => {
     if (!approveDialog) return;
@@ -65,11 +74,17 @@ export function Pending() {
 
   return (
     <div className="p-6 space-y-5">
-      <div>
-        <h1 className="text-xl font-semibold">Ausstehende Geräte</h1>
-        <p className="text-sm text-muted-foreground">
-          {pendingList.length} ausstehende Registrierungsanfrage{pendingList.length !== 1 ? "n" : ""}
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-semibold">Ausstehende Geräte</h1>
+          <p className="text-sm text-muted-foreground">
+            {pendingList.length} ausstehende Registrierungsanfrage{pendingList.length !== 1 ? "n" : ""}
+          </p>
+        </div>
+        <Button variant="outline" size="sm" onClick={handleRefresh} disabled={refreshing}>
+          <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${refreshing ? "animate-spin" : ""}`} />
+          Aktualisieren
+        </Button>
       </div>
 
       {loading ? (
@@ -106,6 +121,12 @@ export function Pending() {
                     <MemoryStick className="h-3.5 w-3.5" />
                     <span>{device.ramTotalGB > 0 ? `${device.ramTotalGB} GB RAM` : "—"}</span>
                   </div>
+                  {device.invitedByUsername && (
+                    <div className="flex items-center gap-2 text-muted-foreground">
+                      <UserPlus className="h-3.5 w-3.5" />
+                      <span>Eingeladen von <strong className="text-foreground">{device.invitedByUsername}</strong></span>
+                    </div>
+                  )}
                 </div>
                 <div className="flex gap-2 pt-1">
                   <Button

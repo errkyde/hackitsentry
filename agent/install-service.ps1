@@ -101,7 +101,6 @@ Copy-Item -Path "$ScriptDir\*" -Destination $InstallDir -Recurse -Force
 $AppSettings = @{
     SentryAgent = @{
         ServerUrl               = $ServerUrl
-        ApiKey                  = ""
         CheckinIntervalMinutes  = $CheckinIntervalMinutes
     }
     Logging = @{
@@ -132,9 +131,18 @@ sc.exe description $ServiceName "$Description" | Out-Null
 # Configure recovery: restart on failure (3 attempts, 1 min cooldown)
 sc.exe failure $ServiceName reset= 86400 actions= restart/60000/restart/60000/restart/60000 | Out-Null
 
-# Create state directory
+# Clear old agent state so the agent registers fresh (removes stale tokens / API keys)
 $StateDir = "C:\ProgramData\HackITSentry"
-if (-not (Test-Path $StateDir)) {
+if (Test-Path $StateDir) {
+    $FilesToClear = @("agent-state.json", "agent.key", "server.url")
+    foreach ($f in $FilesToClear) {
+        $p = Join-Path $StateDir $f
+        if (Test-Path $p) {
+            Remove-Item $p -Force
+            Write-Host "Cleared old state file: $f" -ForegroundColor Yellow
+        }
+    }
+} else {
     New-Item -ItemType Directory -Path $StateDir -Force | Out-Null
 }
 

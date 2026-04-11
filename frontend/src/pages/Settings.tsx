@@ -3,17 +3,20 @@ import { toast } from "@/lib/useToast";
 import {
   KeyRound, UserPlus, Trash2, RefreshCw, Mail, Send, CheckCircle2, XCircle,
   ShieldAlert, Plus, Clock, Download, ChevronLeft, ChevronRight, AlertTriangle,
-  Tag, Monitor
+  Tag, Monitor, Settings2, Users, FileText, Cpu, Bell, Pencil
 } from "lucide-react";
 import {
   auth, users, settings, software, audit, agentVersions, devices as devicesApi,
+  notifications,
   type AppUser, type EmailSettingsInput, type BlacklistEntry,
-  type AuditLogEntry, type AgentVersion, type RustDeskSettings
+  type AuditLogEntry, type AgentVersion, type RustDeskSettings,
+  type NotificationDefaults, type DeviceNotificationOverride
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
@@ -80,6 +83,18 @@ export function Settings() {
   const [diskThreshold, setDiskThreshold] = useState(10);
   const [alertSaveMsg, setAlertSaveMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
+  // --- Notification settings ---
+  const [notifyDefaults, setNotifyDefaults] = useState<NotificationDefaults>({
+    deviceOffline: true, deviceOnline: true, newPending: true, softwareAlert: true, diskFull: true,
+  });
+  const [notifyOverrides, setNotifyOverrides] = useState<DeviceNotificationOverride[]>([]);
+  const [notifySaveMsg, setNotifySaveMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [notifyOverrideDialog, setNotifyOverrideDialog] = useState<DeviceNotificationOverride | null | "new">(null);
+  const [overrideDeviceSearch, setOverrideDeviceSearch] = useState("");
+  const [overrideDeviceId, setOverrideDeviceId] = useState("");
+  const [overrideValues, setOverrideValues] = useState({ alertOnOffline: null as boolean | null, alertOnOnline: null as boolean | null, alertOnSoftwareAlert: null as boolean | null, alertOnDiskFull: null as boolean | null });
+  const [allDevices, setAllDevices] = useState<{ id: string; hostname: string; description: string }[]>([]);
+
   // --- RustDesk settings ---
   const [rustDesk, setRustDesk] = useState<RustDeskSettings>({
     relayHost: "", publicKey: "", autoInstall: false, downloadUrl: "",
@@ -129,6 +144,9 @@ export function Settings() {
     devicesApi.getAlertSettings().then(s => setDiskThreshold(s.diskAlertThresholdPercent)).catch(() => {});
     settings.get().then(s => setCheckinInterval(s.checkinIntervalMinutes)).catch(() => {});
     settings.getRustDesk().then(setRustDesk).catch(() => {});
+    notifications.getDefaults().then(setNotifyDefaults).catch(() => {});
+    notifications.getDeviceOverrides().then(setNotifyOverrides).catch(() => {});
+    devicesApi.list().then(list => setAllDevices(list.map(d => ({ id: d.id, hostname: d.hostname, description: d.description })))).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -281,6 +299,43 @@ export function Settings() {
     setAgentVers(prev => prev.filter(v => v.id !== id));
   };
 
+  const handleSaveNotifyDefaults = async () => {
+    setNotifySaveMsg(null);
+    try {
+      const res = await notifications.saveDefaults(notifyDefaults);
+      setNotifySaveMsg({ ok: true, text: res.message });
+    } catch (err: any) {
+      setNotifySaveMsg({ ok: false, text: err.message || "Fehler" });
+    }
+  };
+
+  const openNewOverride = () => {
+    setOverrideDeviceId("");
+    setOverrideDeviceSearch("");
+    setOverrideValues({ alertOnOffline: null, alertOnOnline: null, alertOnSoftwareAlert: null, alertOnDiskFull: null });
+    setNotifyOverrideDialog("new");
+  };
+
+  const openEditOverride = (o: DeviceNotificationOverride) => {
+    setOverrideDeviceId(o.device.id);
+    setOverrideDeviceSearch(o.device.hostname);
+    setOverrideValues({ alertOnOffline: o.alertOnOffline, alertOnOnline: o.alertOnOnline, alertOnSoftwareAlert: o.alertOnSoftwareAlert, alertOnDiskFull: o.alertOnDiskFull });
+    setNotifyOverrideDialog(o);
+  };
+
+  const handleSaveOverride = async () => {
+    if (!overrideDeviceId) return;
+    await notifications.upsertDeviceOverride({ deviceId: overrideDeviceId, ...overrideValues }).catch(() => {});
+    const updated = await notifications.getDeviceOverrides().catch(() => notifyOverrides);
+    setNotifyOverrides(updated);
+    setNotifyOverrideDialog(null);
+  };
+
+  const handleDeleteOverride = async (deviceId: string) => {
+    await notifications.deleteDeviceOverride(deviceId).catch(() => {});
+    setNotifyOverrides(prev => prev.filter(o => o.device.id !== deviceId));
+  };
+
   const handlePublishAgent = async () => {
     setPublishLoading(true);
     try {
@@ -298,43 +353,11 @@ export function Settings() {
   const auditTotalPages = Math.ceil(auditTotal / AUDIT_PAGE_SIZE);
 
   return (
-    <div className="p-6 max-w-3xl space-y-6">
+    <div className="p-6 max-w-4xl space-y-6">
       <div>
         <h1 className="text-xl font-semibold">Einstellungen</h1>
         <p className="text-sm text-muted-foreground">Angemeldet als <strong>{currentUsername}</strong></p>
       </div>
-
-      {/* Change password */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <KeyRound className="h-4 w-4" />
-            Passwort ändern
-          </CardTitle>
-          <CardDescription>Ändere dein eigenes Anmelde-Passwort.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={handleChangePassword} className="space-y-3">
-            <div className="space-y-1.5">
-              <Label>Aktuelles Passwort</Label>
-              <Input type="password" value={pwCurrent} onChange={e => setPwCurrent(e.target.value)} autoComplete="current-password" />
-            </div>
-            <div className="space-y-1.5">
-              <Label>Neues Passwort</Label>
-              <Input type="password" value={pwNext} onChange={e => setPwNext(e.target.value)} autoComplete="new-password" />
-            </div>
-            <div className="space-y-1.5">
-              <Label>Neues Passwort bestätigen</Label>
-              <Input type="password" value={pwConfirm} onChange={e => setPwConfirm(e.target.value)} autoComplete="new-password" />
-            </div>
-            {pwError && <p className="text-sm text-destructive">{pwError}</p>}
-            {pwSuccess && <p className="text-sm text-emerald-500">Passwort erfolgreich geändert.</p>}
-            <Button type="submit" disabled={pwLoading || !pwCurrent || !pwNext || !pwConfirm}>
-              {pwLoading ? "Wird geändert..." : "Passwort ändern"}
-            </Button>
-          </form>
-        </CardContent>
-      </Card>
 
       {!isAdmin && (
         <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-600 dark:text-amber-400">
@@ -342,479 +365,652 @@ export function Settings() {
         </div>
       )}
 
-      {isAdmin && (<>
-      {/* Email alerting */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Mail className="h-4 w-4" />
-            E-Mail Benachrichtigungen
-          </CardTitle>
-          <CardDescription>
-            Automatische Alerts wenn Geräte offline gehen oder sich wieder verbinden.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={handleSaveEmail} className="space-y-4">
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label>SMTP Host</Label>
-                <Input placeholder="smtp.example.com" value={emailForm.host} onChange={e => setEmailForm(f => ({ ...f, host: e.target.value }))} />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Port</Label>
-                <Input type="number" value={emailForm.port} onChange={e => setEmailForm(f => ({ ...f, port: Number(e.target.value) }))} />
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label>Benutzername</Label>
-                <Input placeholder="user@example.com" value={emailForm.username} onChange={e => setEmailForm(f => ({ ...f, username: e.target.value }))} autoComplete="off" />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Passwort {emailHasPassword && <span className="text-xs text-muted-foreground">(gesetzt)</span>}</Label>
-                <Input type="password" placeholder={emailHasPassword ? "Leer lassen um beizubehalten" : ""} value={emailForm.password} onChange={e => setEmailForm(f => ({ ...f, password: e.target.value }))} autoComplete="new-password" />
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label>Absender (From)</Label>
-                <Input placeholder="sentry@example.com" value={emailForm.from} onChange={e => setEmailForm(f => ({ ...f, from: e.target.value }))} />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Empfänger (To)</Label>
-                <Input placeholder="admin@example.com" value={emailForm.to} onChange={e => setEmailForm(f => ({ ...f, to: e.target.value }))} />
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <input id="useSsl" type="checkbox" className="h-4 w-4 rounded border-border" checked={emailForm.useSsl} onChange={e => setEmailForm(f => ({ ...f, useSsl: e.target.checked }))} />
-              <Label htmlFor="useSsl" className="cursor-pointer">SSL direkt (Port 465); unkontrolliert = STARTTLS</Label>
-            </div>
-            {emailSaveMsg && (
-              <div className={`flex items-center gap-2 text-sm ${emailSaveMsg.ok ? "text-emerald-500" : "text-destructive"}`}>
-                {emailSaveMsg.ok ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
-                {emailSaveMsg.text}
-              </div>
-            )}
-            <div className="flex gap-2">
-              <Button type="submit" disabled={emailLoading}>{emailLoading ? "Speichern..." : "Speichern"}</Button>
-              <Button type="button" variant="outline" onClick={handleTestEmail} disabled={testLoading}>
-                <Send className="h-3.5 w-3.5 mr-1.5" />
-                {testLoading ? "Wird gesendet..." : "Test-E-Mail"}
-              </Button>
-            </div>
-            {testMsg && (
-              <div className={`flex items-center gap-2 text-sm ${testMsg.ok ? "text-emerald-500" : "text-destructive"}`}>
-                {testMsg.ok ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
-                {testMsg.text}
-              </div>
-            )}
-          </form>
-        </CardContent>
-      </Card>
+      <Tabs defaultValue={isAdmin ? "allgemein" : "passwort"}>
+        <TabsList className="flex w-full h-auto flex-wrap gap-1 bg-muted p-1">
+          {isAdmin && <TabsTrigger value="allgemein" className="flex items-center gap-1.5"><Settings2 className="h-3.5 w-3.5" />Allgemein</TabsTrigger>}
+          {isAdmin && <TabsTrigger value="email" className="flex items-center gap-1.5"><Mail className="h-3.5 w-3.5" />E-Mail</TabsTrigger>}
+          {isAdmin && <TabsTrigger value="benachrichtigungen" className="flex items-center gap-1.5"><Bell className="h-3.5 w-3.5" />Benachrichtigungen</TabsTrigger>}
+          {isAdmin && <TabsTrigger value="fernzugriff" className="flex items-center gap-1.5"><Monitor className="h-3.5 w-3.5" />Fernzugriff</TabsTrigger>}
+          {isAdmin && <TabsTrigger value="agent" className="flex items-center gap-1.5"><Cpu className="h-3.5 w-3.5" />Agent</TabsTrigger>}
+          {isAdmin && <TabsTrigger value="software" className="flex items-center gap-1.5"><ShieldAlert className="h-3.5 w-3.5" />Software</TabsTrigger>}
+          {isAdmin && <TabsTrigger value="benutzer" className="flex items-center gap-1.5"><Users className="h-3.5 w-3.5" />Benutzer</TabsTrigger>}
+          {isAdmin && <TabsTrigger value="protokoll" className="flex items-center gap-1.5"><FileText className="h-3.5 w-3.5" />Protokoll</TabsTrigger>}
+          <TabsTrigger value="passwort" className="flex items-center gap-1.5"><KeyRound className="h-3.5 w-3.5" />Passwort</TabsTrigger>
+        </TabsList>
 
-      {/* Alert thresholds */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <AlertTriangle className="h-4 w-4" />
-            Alert-Schwellwerte
-          </CardTitle>
-          <CardDescription>Konfiguriere Grenzwerte für automatische E-Mail-Benachrichtigungen.</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex items-end gap-3">
-            <div className="space-y-1.5 flex-1">
-              <Label>Festplatten-Alert: Freier Speicher unter</Label>
-              <div className="flex items-center gap-2">
-                <Input
-                  type="number"
-                  min={1}
-                  max={99}
-                  value={diskThreshold}
-                  onChange={e => setDiskThreshold(Number(e.target.value))}
-                  className="w-24"
-                />
-                <span className="text-sm text-muted-foreground">%</span>
-              </div>
-            </div>
-            <Button onClick={handleSaveAlerts}>Speichern</Button>
-          </div>
-          {alertSaveMsg && (
-            <div className={`flex items-center gap-2 text-sm ${alertSaveMsg.ok ? "text-emerald-500" : "text-destructive"}`}>
-              {alertSaveMsg.ok ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
-              {alertSaveMsg.text}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Checkin interval */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Clock className="h-4 w-4" />
-            Check-in-Intervall
-          </CardTitle>
-          <CardDescription>
-            Wie oft der Agent den Server kontaktiert. Ändert sich beim nächsten Check-in der Agents automatisch.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex items-end gap-3">
-            <div className="space-y-1.5 flex-1">
-              <Label>Intervall</Label>
-              <div className="flex items-center gap-2">
-                <Input
-                  type="number"
-                  min={1}
-                  max={1440}
-                  value={checkinInterval}
-                  onChange={e => setCheckinInterval(Number(e.target.value))}
-                  className="w-24"
-                />
-                <span className="text-sm text-muted-foreground">Minuten</span>
-              </div>
-            </div>
-            <Button onClick={handleSaveCheckin}>Speichern</Button>
-          </div>
-          {checkinSaveMsg && (
-            <div className={`flex items-center gap-2 text-sm ${checkinSaveMsg.ok ? "text-emerald-500" : "text-destructive"}`}>
-              {checkinSaveMsg.ok ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
-              {checkinSaveMsg.text}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* RustDesk */}
-      {isAdmin && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Monitor className="h-4 w-4" />
-              RustDesk (Fernzugriff)
-            </CardTitle>
-            <CardDescription>
-              Self-hosted RustDesk-Relay konfigurieren. Agents konfigurieren sich beim nächsten Check-in automatisch.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-1.5">
-                <Label>Relay-Host</Label>
-                <Input
-                  placeholder="z.B. sentry.example.com"
-                  value={rustDesk.relayHost}
-                  onChange={e => setRustDesk(r => ({ ...r, relayHost: e.target.value }))}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Download-URL (Installer)</Label>
-                <Input
-                  placeholder="https://…/rustdesk-1.x.x.exe"
-                  value={rustDesk.downloadUrl}
-                  onChange={e => setRustDesk(r => ({ ...r, downloadUrl: e.target.value }))}
-                />
-              </div>
-            </div>
-            <div className="space-y-1.5">
-              <Label>Öffentlicher Schlüssel (Public Key)</Label>
-              <Input
-                placeholder="Base64-kodierter Ed25519-Key aus id_ed25519.pub"
-                value={rustDesk.publicKey}
-                onChange={e => setRustDesk(r => ({ ...r, publicKey: e.target.value }))}
-                className="font-mono text-xs"
-              />
-              <p className="text-xs text-muted-foreground">
-                Aus dem Server-Container auslesen:{" "}
-                <code className="bg-muted px-1 rounded">docker exec &lt;rustdesk-hbbs&gt; cat /root/id_ed25519.pub</code>
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
-              <input
-                id="rd-autoinstall"
-                type="checkbox"
-                checked={rustDesk.autoInstall}
-                onChange={e => setRustDesk(r => ({ ...r, autoInstall: e.target.checked }))}
-                className="h-4 w-4 rounded border-border accent-primary"
-              />
-              <Label htmlFor="rd-autoinstall" className="font-normal cursor-pointer">
-                Automatisch installieren — Agent installiert RustDesk, wenn noch nicht vorhanden (erfordert Download-URL)
-              </Label>
-            </div>
-            <div className="flex items-center gap-3">
-              <Button onClick={handleSaveRustDesk} disabled={rustDeskLoading}>
-                {rustDeskLoading ? "Wird gespeichert..." : "Speichern"}
-              </Button>
-              {rustDeskSaveMsg && (
-                <div className={`flex items-center gap-2 text-sm ${rustDeskSaveMsg.ok ? "text-emerald-500" : "text-destructive"}`}>
-                  {rustDeskSaveMsg.ok ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
-                  {rustDeskSaveMsg.text}
+        {/* ── Allgemein ─────────────────────────────────────────────── */}
+        {isAdmin && (
+          <TabsContent value="allgemein" className="space-y-4 mt-4">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Clock className="h-4 w-4" />
+                  Check-in-Intervall
+                </CardTitle>
+                <CardDescription>
+                  Wie oft der Agent den Server kontaktiert. Ändert sich beim nächsten Check-in automatisch.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-end gap-3">
+                  <div className="space-y-1.5">
+                    <Label>Intervall</Label>
+                    <div className="flex items-center gap-2">
+                      <Input
+                        type="number" min={1} max={1440}
+                        value={checkinInterval}
+                        onChange={e => setCheckinInterval(Number(e.target.value))}
+                        className="w-24"
+                      />
+                      <span className="text-sm text-muted-foreground">Minuten</span>
+                    </div>
+                  </div>
+                  <Button onClick={handleSaveCheckin}>Speichern</Button>
                 </div>
-              )}
-            </div>
-          </CardContent>
-        </Card>
-      )}
+                {checkinSaveMsg && (
+                  <div className={`flex items-center gap-2 text-sm mt-3 ${checkinSaveMsg.ok ? "text-emerald-500" : "text-destructive"}`}>
+                    {checkinSaveMsg.ok ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
+                    {checkinSaveMsg.text}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
 
-      {/* Software Blacklist */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle className="flex items-center gap-2 text-base">
-                <ShieldAlert className="h-4 w-4" />
-                Software-Blacklist
-              </CardTitle>
-              <CardDescription>Software-Namen oder Muster, die einen Alert auslösen wenn erkannt.</CardDescription>
-            </div>
-            <Button size="sm" onClick={() => { setBlPattern(""); setBlPublisher(""); setBlReason(""); setBlacklistDialog(true); }}>
-              <Plus className="h-3.5 w-3.5 mr-1.5" />
-              Eintrag hinzufügen
-            </Button>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {blacklist.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Keine Einträge vorhanden.</p>
-          ) : (
-            <div className="rounded-md border border-border overflow-hidden">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-border bg-muted/30">
-                    <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Muster</th>
-                    <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Hersteller</th>
-                    <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Grund</th>
-                    <th className="w-12"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {blacklist.map(entry => (
-                    <tr key={entry.id} className="border-t border-border/50">
-                      <td className="px-4 py-2.5 font-medium font-mono text-xs">{entry.namePattern}</td>
-                      <td className="px-4 py-2.5 text-muted-foreground">{entry.publisher ?? "—"}</td>
-                      <td className="px-4 py-2.5 text-muted-foreground">{entry.reason ?? "—"}</td>
-                      <td className="px-4 py-2.5">
-                        <Button variant="ghost" size="icon" className="h-7 w-7 hover:text-destructive" onClick={() => handleDeleteBlacklist(entry.id)}>
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <AlertTriangle className="h-4 w-4" />
+                  Alert-Schwellwerte
+                </CardTitle>
+                <CardDescription>Grenzwerte für automatische E-Mail-Benachrichtigungen.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-end gap-3">
+                  <div className="space-y-1.5">
+                    <Label>Festplatte: Alert wenn freier Speicher unter</Label>
+                    <div className="flex items-center gap-2">
+                      <Input
+                        type="number" min={1} max={99}
+                        value={diskThreshold}
+                        onChange={e => setDiskThreshold(Number(e.target.value))}
+                        className="w-24"
+                      />
+                      <span className="text-sm text-muted-foreground">%</span>
+                    </div>
+                  </div>
+                  <Button onClick={handleSaveAlerts}>Speichern</Button>
+                </div>
+                {alertSaveMsg && (
+                  <div className={`flex items-center gap-2 text-sm mt-3 ${alertSaveMsg.ok ? "text-emerald-500" : "text-destructive"}`}>
+                    {alertSaveMsg.ok ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
+                    {alertSaveMsg.text}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
 
-      {/* Agent Versions */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle className="flex items-center gap-2 text-base">
-                <Tag className="h-4 w-4" />
-                Agent-Versionen
-              </CardTitle>
-              <CardDescription>Verwalte verfügbare Agent-Versionen. Die aktuelle Version wird den Agents beim Check-in gemeldet.</CardDescription>
-            </div>
-            <div className="flex gap-2">
-              <Button size="sm" variant="outline" onClick={handlePublishAgent} disabled={publishLoading}>
-                <Download className="h-3.5 w-3.5 mr-1.5" />
-                {publishLoading ? "Wird veröffentlicht..." : "Aktuelle Version publishen"}
-              </Button>
-              <Button size="sm" onClick={() => { setVerVersion(""); setVerUrl(""); setVerChangelog(""); setVerIsLatest(true); setVersionDialog(true); }}>
-                <Plus className="h-3.5 w-3.5 mr-1.5" />
-                Manuell hinzufügen
-              </Button>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {agentVers.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Noch keine Versionen registriert.</p>
-          ) : (
-            <div className="rounded-md border border-border overflow-hidden">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-border bg-muted/30">
-                    <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Version</th>
-                    <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Download URL</th>
-                    <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Veröffentlicht</th>
-                    <th className="w-32"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {agentVers.map(v => (
-                    <tr key={v.id} className="border-t border-border/50">
-                      <td className="px-4 py-2.5">
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono text-xs">{v.version}</span>
-                          {v.isLatest && <Badge variant="secondary" className="text-xs">aktuell</Badge>}
-                        </div>
-                      </td>
-                      <td className="px-4 py-2.5 text-muted-foreground text-xs truncate max-w-[200px]">
-                        {v.downloadUrl ? (
-                          <a href={v.downloadUrl} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
-                            {v.downloadUrl}
-                          </a>
-                        ) : "—"}
-                      </td>
-                      <td className="px-4 py-2.5 text-muted-foreground text-xs">
-                        {new Date(v.releasedAt).toLocaleDateString("de-DE")}
-                      </td>
-                      <td className="px-4 py-2.5">
-                        <div className="flex gap-1 justify-end">
-                          {!v.isLatest && (
-                            <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => handleSetLatest(v.id)}>
-                              Als aktuell
-                            </Button>
+        {/* ── E-Mail ────────────────────────────────────────────────── */}
+        {isAdmin && (
+          <TabsContent value="email" className="mt-4">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Mail className="h-4 w-4" />
+                  E-Mail-Benachrichtigungen
+                </CardTitle>
+                <CardDescription>
+                  SMTP-Konfiguration für automatische Alerts (Gerät offline/online, Festplatten-Warnung).
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <form onSubmit={handleSaveEmail} className="space-y-4">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1.5">
+                      <Label>SMTP Host</Label>
+                      <Input placeholder="smtp.example.com" value={emailForm.host} onChange={e => setEmailForm(f => ({ ...f, host: e.target.value }))} />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Port</Label>
+                      <Input type="number" value={emailForm.port} onChange={e => setEmailForm(f => ({ ...f, port: Number(e.target.value) }))} />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1.5">
+                      <Label>Benutzername</Label>
+                      <Input placeholder="user@example.com" value={emailForm.username} onChange={e => setEmailForm(f => ({ ...f, username: e.target.value }))} autoComplete="off" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Passwort {emailHasPassword && <span className="text-xs text-muted-foreground">(gesetzt)</span>}</Label>
+                      <Input type="password" placeholder={emailHasPassword ? "Leer lassen um beizubehalten" : ""} value={emailForm.password} onChange={e => setEmailForm(f => ({ ...f, password: e.target.value }))} autoComplete="new-password" />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1.5">
+                      <Label>Absender (From)</Label>
+                      <Input placeholder="sentry@example.com" value={emailForm.from} onChange={e => setEmailForm(f => ({ ...f, from: e.target.value }))} />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Empfänger (To)</Label>
+                      <Input placeholder="admin@example.com" value={emailForm.to} onChange={e => setEmailForm(f => ({ ...f, to: e.target.value }))} />
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input id="useSsl" type="checkbox" className="h-4 w-4 rounded border-border" checked={emailForm.useSsl} onChange={e => setEmailForm(f => ({ ...f, useSsl: e.target.checked }))} />
+                    <Label htmlFor="useSsl" className="cursor-pointer font-normal">SSL direkt (Port 465) — ohne Haken: STARTTLS</Label>
+                  </div>
+                  {emailSaveMsg && (
+                    <div className={`flex items-center gap-2 text-sm ${emailSaveMsg.ok ? "text-emerald-500" : "text-destructive"}`}>
+                      {emailSaveMsg.ok ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
+                      {emailSaveMsg.text}
+                    </div>
+                  )}
+                  <div className="flex gap-2">
+                    <Button type="submit" disabled={emailLoading}>{emailLoading ? "Speichern..." : "Speichern"}</Button>
+                    <Button type="button" variant="outline" onClick={handleTestEmail} disabled={testLoading}>
+                      <Send className="h-3.5 w-3.5 mr-1.5" />
+                      {testLoading ? "Wird gesendet..." : "Test-E-Mail"}
+                    </Button>
+                  </div>
+                  {testMsg && (
+                    <div className={`flex items-center gap-2 text-sm ${testMsg.ok ? "text-emerald-500" : "text-destructive"}`}>
+                      {testMsg.ok ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
+                      {testMsg.text}
+                    </div>
+                  )}
+                </form>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
+
+        {/* ── Benachrichtigungen ────────────────────────────────────── */}
+        {isAdmin && (
+          <TabsContent value="benachrichtigungen" className="space-y-4 mt-4">
+            {/* Default-Einstellungen */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Bell className="h-4 w-4" />
+                  Standard-Benachrichtigungen
+                </CardTitle>
+                <CardDescription>
+                  Diese Einstellungen gelten für alle Geräte, sofern keine geräteindividuelle Regel greift.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {([
+                  { key: "deviceOffline", label: "Gerät geht offline" },
+                  { key: "deviceOnline", label: "Gerät ist wieder online" },
+                  { key: "newPending", label: "Neue Geräteregistrierung (ausstehend)" },
+                  { key: "softwareAlert", label: "Blacklisted Software erkannt" },
+                  { key: "diskFull", label: "Festplatte fast voll" },
+                ] as const).map(({ key, label }) => (
+                  <div key={key} className="flex items-center gap-3">
+                    <input
+                      id={`notify-${key}`}
+                      type="checkbox"
+                      checked={notifyDefaults[key]}
+                      onChange={e => setNotifyDefaults(d => ({ ...d, [key]: e.target.checked }))}
+                      className="h-4 w-4 rounded border-border accent-primary"
+                    />
+                    <Label htmlFor={`notify-${key}`} className="font-normal cursor-pointer">{label}</Label>
+                  </div>
+                ))}
+                <div className="flex items-center gap-3 pt-2">
+                  <Button onClick={handleSaveNotifyDefaults}>Speichern</Button>
+                  {notifySaveMsg && (
+                    <div className={`flex items-center gap-2 text-sm ${notifySaveMsg.ok ? "text-emerald-500" : "text-destructive"}`}>
+                      {notifySaveMsg.ok ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
+                      {notifySaveMsg.text}
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Geräte-Overrides */}
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <Monitor className="h-4 w-4" />
+                      Geräteindividuelle Einstellungen
+                    </CardTitle>
+                    <CardDescription>
+                      Überschreibe Benachrichtigungsregeln für einzelne Geräte. Geräte ohne Eintrag nutzen die Standardeinstellung.
+                    </CardDescription>
+                  </div>
+                  <Button size="sm" onClick={openNewOverride}>
+                    <Plus className="h-3.5 w-3.5 mr-1.5" />
+                    Gerät hinzufügen
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {notifyOverrides.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">Keine geräteindividuellen Einstellungen vorhanden.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {notifyOverrides.map(o => (
+                      <div key={o.id} className="flex items-center justify-between rounded-md border px-3 py-2 text-sm">
+                        <div className="flex-1 min-w-0">
+                          <div className="font-medium truncate">{o.device.hostname}</div>
+                          {o.device.customer && (
+                            <div className="text-xs text-muted-foreground">{o.device.customer.name}</div>
                           )}
-                          <Button variant="ghost" size="icon" className="h-7 w-7 hover:text-destructive" onClick={() => handleDeleteVersion(v.id)}>
-                            <Trash2 className="h-3.5 w-3.5" />
+                        </div>
+                        <div className="flex gap-3 text-xs text-muted-foreground mx-4 flex-wrap">
+                          {([
+                            { val: o.alertOnOffline, label: "Offline" },
+                            { val: o.alertOnOnline, label: "Online" },
+                            { val: o.alertOnSoftwareAlert, label: "Software" },
+                            { val: o.alertOnDiskFull, label: "Disk" },
+                          ]).map(({ val, label }) => (
+                            <span key={label} className={`px-1.5 py-0.5 rounded ${val === null ? "bg-muted text-muted-foreground" : val ? "bg-emerald-500/10 text-emerald-600" : "bg-red-500/10 text-red-500"}`}>
+                              {label}: {val === null ? "Standard" : val ? "An" : "Aus"}
+                            </span>
+                          ))}
+                        </div>
+                        <div className="flex gap-1.5">
+                          <Button size="sm" variant="ghost" onClick={() => openEditOverride(o)}>
+                            <Pencil className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button size="sm" variant="ghost" onClick={() => handleDeleteOverride(o.device.id)}>
+                            <Trash2 className="h-3.5 w-3.5 text-destructive" />
                           </Button>
                         </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* User management */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle className="text-base">Benutzer</CardTitle>
-              <CardDescription>Admin-Accounts verwalten.</CardDescription>
-            </div>
-            <Button size="sm" onClick={() => { setNewUsername(""); setNewPassword(""); setNewRole("User"); setCreateError(""); setCreateDialog(true); }}>
-              <UserPlus className="h-3.5 w-3.5 mr-1.5" />
-              Neuer Benutzer
-            </Button>
-          </div>
-        </CardHeader>
-        <CardContent>
-          <div className="rounded-md border border-border overflow-hidden">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border bg-muted/30">
-                  <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Benutzername</th>
-                  <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Rolle</th>
-                  <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Erstellt</th>
-                  <th className="w-24"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {userList.map(user => (
-                  <tr key={user.id} className="border-t border-border/50">
-                    <td className="px-4 py-2.5 font-medium">
-                      {user.username}
-                      {user.username === currentUsername && (
-                        <span className="ml-2 text-xs text-muted-foreground">(du)</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                        user.role === "Admin"
-                          ? "bg-primary/10 text-primary"
-                          : "bg-muted text-muted-foreground"
-                      }`}>
-                        {user.role === "Admin" ? "Admin" : "Benutzer"}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2.5 text-muted-foreground text-xs">
-                      {new Date(user.createdAt).toLocaleDateString("de-DE")}
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <div className="flex gap-1 justify-end">
-                        <Button variant="ghost" size="icon" className="h-7 w-7" title="Passwort zurücksetzen"
-                          onClick={() => { setResetPw(""); setResetDialog(user); }}>
-                          <RefreshCw className="h-3.5 w-3.5" />
-                        </Button>
-                        <Button variant="ghost" size="icon" className="h-7 w-7 hover:text-destructive"
-                          onClick={() => setDeleteConfirm(user)}
-                          disabled={user.username === currentUsername}>
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
                       </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </CardContent>
-      </Card>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
 
-      {/* Audit Log */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Clock className="h-4 w-4" />
-            Audit-Log
-          </CardTitle>
-          <CardDescription>Protokoll aller administrativen Aktionen.</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="relative">
-            <Input
-              placeholder="Benutzer suchen..."
-              value={auditSearch}
-              onChange={e => { setAuditSearch(e.target.value); setAuditPage(1); }}
-              className="max-w-sm"
-            />
-          </div>
-          <div className="rounded-md border border-border overflow-hidden">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border bg-muted/30">
-                  <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Zeitpunkt</th>
-                  <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Benutzer</th>
-                  <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Aktion</th>
-                  <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Details</th>
-                </tr>
-              </thead>
-              <tbody>
-                {auditLogs.length === 0 ? (
-                  <tr><td colSpan={4} className="px-4 py-8 text-center text-muted-foreground text-xs">Keine Einträge gefunden.</td></tr>
-                ) : auditLogs.map(log => (
-                  <tr key={log.id} className="border-t border-border/50">
-                    <td className="px-4 py-2 text-xs text-muted-foreground whitespace-nowrap">
-                      {new Date(log.timestamp).toLocaleString("de-DE", { dateStyle: "short", timeStyle: "short" })}
-                    </td>
-                    <td className="px-4 py-2 font-medium">{log.username}</td>
-                    <td className="px-4 py-2 font-mono text-xs text-primary">{log.action}</td>
-                    <td className="px-4 py-2 text-muted-foreground text-xs truncate max-w-[200px]">
-                      {log.entityType}{log.details ? ` — ${log.details}` : ""}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {auditTotalPages > 1 && (
-            <div className="flex items-center justify-between text-xs text-muted-foreground">
-              <span>Seite {auditPage} von {auditTotalPages} ({auditTotal} Einträge)</span>
-              <div className="flex gap-1">
-                <Button variant="outline" size="icon" className="h-7 w-7" disabled={auditPage <= 1} onClick={() => setAuditPage(p => p - 1)}>
-                  <ChevronLeft className="h-3.5 w-3.5" />
+        {/* ── Fernzugriff (RustDesk) ────────────────────────────────── */}
+        {isAdmin && (
+          <TabsContent value="fernzugriff" className="mt-4">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Monitor className="h-4 w-4" />
+                  RustDesk (Fernzugriff)
+                </CardTitle>
+                <CardDescription>
+                  Self-hosted RustDesk-Relay konfigurieren. Agents übernehmen die Einstellungen beim nächsten Check-in.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <Label>Relay-Host</Label>
+                    <Input
+                      placeholder="z.B. sentry.example.com"
+                      value={rustDesk.relayHost}
+                      onChange={e => setRustDesk(r => ({ ...r, relayHost: e.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Download-URL (Installer)</Label>
+                    <Input
+                      placeholder="https://…/rustdesk-1.x.x.exe"
+                      value={rustDesk.downloadUrl}
+                      onChange={e => setRustDesk(r => ({ ...r, downloadUrl: e.target.value }))}
+                    />
+                  </div>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Öffentlicher Schlüssel (Public Key)</Label>
+                  <Input
+                    placeholder="Base64-kodierter Ed25519-Key aus id_ed25519.pub"
+                    value={rustDesk.publicKey}
+                    onChange={e => setRustDesk(r => ({ ...r, publicKey: e.target.value }))}
+                    className="font-mono text-xs"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Aus dem Container auslesen:{" "}
+                    <code className="bg-muted px-1 rounded">docker exec &lt;rustdesk-hbbs&gt; cat /root/id_ed25519.pub</code>
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    id="rd-autoinstall"
+                    type="checkbox"
+                    checked={rustDesk.autoInstall}
+                    onChange={e => setRustDesk(r => ({ ...r, autoInstall: e.target.checked }))}
+                    className="h-4 w-4 rounded border-border accent-primary"
+                  />
+                  <Label htmlFor="rd-autoinstall" className="font-normal cursor-pointer">
+                    Automatisch installieren — Agent installiert RustDesk, wenn noch nicht vorhanden
+                  </Label>
+                </div>
+                <div className="flex items-center gap-3 pt-1">
+                  <Button onClick={handleSaveRustDesk} disabled={rustDeskLoading}>
+                    {rustDeskLoading ? "Wird gespeichert..." : "Speichern"}
+                  </Button>
+                  {rustDeskSaveMsg && (
+                    <div className={`flex items-center gap-2 text-sm ${rustDeskSaveMsg.ok ? "text-emerald-500" : "text-destructive"}`}>
+                      {rustDeskSaveMsg.ok ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
+                      {rustDeskSaveMsg.text}
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
+
+        {/* ── Agent ─────────────────────────────────────────────────── */}
+        {isAdmin && (
+          <TabsContent value="agent" className="mt-4">
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <Tag className="h-4 w-4" />
+                      Agent-Versionen
+                    </CardTitle>
+                    <CardDescription>
+                      Die als „aktuell" markierte Version wird den Agents beim Check-in gemeldet und löst ein automatisches Update aus.
+                    </CardDescription>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button size="sm" variant="outline" onClick={handlePublishAgent} disabled={publishLoading}>
+                      <Download className="h-3.5 w-3.5 mr-1.5" />
+                      {publishLoading ? "Wird veröffentlicht..." : "Publishen"}
+                    </Button>
+                    <Button size="sm" onClick={() => { setVerVersion(""); setVerUrl(""); setVerChangelog(""); setVerIsLatest(true); setVersionDialog(true); }}>
+                      <Plus className="h-3.5 w-3.5 mr-1.5" />
+                      Manuell
+                    </Button>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {agentVers.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">Noch keine Versionen registriert.</p>
+                ) : (
+                  <div className="rounded-md border border-border overflow-hidden">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-border bg-muted/30">
+                          <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Version</th>
+                          <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Download URL</th>
+                          <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Veröffentlicht</th>
+                          <th className="w-32"></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {agentVers.map(v => (
+                          <tr key={v.id} className="border-t border-border/50">
+                            <td className="px-4 py-2.5">
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono text-xs">{v.version}</span>
+                                {v.isLatest && <Badge variant="secondary" className="text-xs">aktuell</Badge>}
+                              </div>
+                            </td>
+                            <td className="px-4 py-2.5 text-muted-foreground text-xs truncate max-w-[220px]">
+                              {v.downloadUrl ? (
+                                <a href={v.downloadUrl} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+                                  {v.downloadUrl}
+                                </a>
+                              ) : "—"}
+                            </td>
+                            <td className="px-4 py-2.5 text-muted-foreground text-xs">
+                              {new Date(v.releasedAt).toLocaleDateString("de-DE")}
+                            </td>
+                            <td className="px-4 py-2.5">
+                              <div className="flex gap-1 justify-end">
+                                {!v.isLatest && (
+                                  <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => handleSetLatest(v.id)}>
+                                    Als aktuell
+                                  </Button>
+                                )}
+                                <Button variant="ghost" size="icon" className="h-7 w-7 hover:text-destructive" onClick={() => handleDeleteVersion(v.id)}>
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </Button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
+
+        {/* ── Software-Blacklist ────────────────────────────────────── */}
+        {isAdmin && (
+          <TabsContent value="software" className="mt-4">
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <ShieldAlert className="h-4 w-4" />
+                      Software-Blacklist
+                    </CardTitle>
+                    <CardDescription>Software-Namen oder Muster, die einen Alert auslösen wenn erkannt.</CardDescription>
+                  </div>
+                  <Button size="sm" onClick={() => { setBlPattern(""); setBlPublisher(""); setBlReason(""); setBlacklistDialog(true); }}>
+                    <Plus className="h-3.5 w-3.5 mr-1.5" />
+                    Eintrag hinzufügen
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {blacklist.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">Keine Einträge vorhanden.</p>
+                ) : (
+                  <div className="rounded-md border border-border overflow-hidden">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-border bg-muted/30">
+                          <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Muster</th>
+                          <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Hersteller</th>
+                          <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Grund</th>
+                          <th className="w-12"></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {blacklist.map(entry => (
+                          <tr key={entry.id} className="border-t border-border/50">
+                            <td className="px-4 py-2.5 font-medium font-mono text-xs">{entry.namePattern}</td>
+                            <td className="px-4 py-2.5 text-muted-foreground">{entry.publisher ?? "—"}</td>
+                            <td className="px-4 py-2.5 text-muted-foreground">{entry.reason ?? "—"}</td>
+                            <td className="px-4 py-2.5">
+                              <Button variant="ghost" size="icon" className="h-7 w-7 hover:text-destructive" onClick={() => handleDeleteBlacklist(entry.id)}>
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
+
+        {/* ── Benutzer ──────────────────────────────────────────────── */}
+        {isAdmin && (
+          <TabsContent value="benutzer" className="mt-4">
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="text-base">Benutzer</CardTitle>
+                    <CardDescription>Admin-Accounts verwalten.</CardDescription>
+                  </div>
+                  <Button size="sm" onClick={() => { setNewUsername(""); setNewPassword(""); setNewRole("User"); setCreateError(""); setCreateDialog(true); }}>
+                    <UserPlus className="h-3.5 w-3.5 mr-1.5" />
+                    Neuer Benutzer
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="rounded-md border border-border overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-border bg-muted/30">
+                        <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Benutzername</th>
+                        <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Rolle</th>
+                        <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Erstellt</th>
+                        <th className="w-24"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {userList.map(user => (
+                        <tr key={user.id} className="border-t border-border/50">
+                          <td className="px-4 py-2.5 font-medium">
+                            {user.username}
+                            {user.username === currentUsername && (
+                              <span className="ml-2 text-xs text-muted-foreground">(du)</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-2.5">
+                            <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                              user.role === "Admin"
+                                ? "bg-primary/10 text-primary"
+                                : "bg-muted text-muted-foreground"
+                            }`}>
+                              {user.role === "Admin" ? "Admin" : "Benutzer"}
+                            </span>
+                          </td>
+                          <td className="px-4 py-2.5 text-muted-foreground text-xs">
+                            {new Date(user.createdAt).toLocaleDateString("de-DE")}
+                          </td>
+                          <td className="px-4 py-2.5">
+                            <div className="flex gap-1 justify-end">
+                              <Button variant="ghost" size="icon" className="h-7 w-7" title="Passwort zurücksetzen"
+                                onClick={() => { setResetPw(""); setResetDialog(user); }}>
+                                <RefreshCw className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button variant="ghost" size="icon" className="h-7 w-7 hover:text-destructive"
+                                onClick={() => setDeleteConfirm(user)}
+                                disabled={user.username === currentUsername}>
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
+
+        {/* ── Protokoll (Audit-Log) ─────────────────────────────────── */}
+        {isAdmin && (
+          <TabsContent value="protokoll" className="mt-4">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <FileText className="h-4 w-4" />
+                  Audit-Log
+                </CardTitle>
+                <CardDescription>Protokoll aller administrativen Aktionen.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <Input
+                  placeholder="Benutzer suchen..."
+                  value={auditSearch}
+                  onChange={e => { setAuditSearch(e.target.value); setAuditPage(1); }}
+                  className="max-w-sm"
+                />
+                <div className="rounded-md border border-border overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-border bg-muted/30">
+                        <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Zeitpunkt</th>
+                        <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Benutzer</th>
+                        <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Aktion</th>
+                        <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Details</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {auditLogs.length === 0 ? (
+                        <tr><td colSpan={4} className="px-4 py-8 text-center text-muted-foreground text-xs">Keine Einträge gefunden.</td></tr>
+                      ) : auditLogs.map(log => (
+                        <tr key={log.id} className="border-t border-border/50">
+                          <td className="px-4 py-2 text-xs text-muted-foreground whitespace-nowrap">
+                            {new Date(log.timestamp).toLocaleString("de-DE", { dateStyle: "short", timeStyle: "short" })}
+                          </td>
+                          <td className="px-4 py-2 font-medium">{log.username}</td>
+                          <td className="px-4 py-2 font-mono text-xs text-primary">{log.action}</td>
+                          <td className="px-4 py-2 text-muted-foreground text-xs truncate max-w-[200px]">
+                            {log.entityType}{log.details ? ` — ${log.details}` : ""}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {auditTotalPages > 1 && (
+                  <div className="flex items-center justify-between text-xs text-muted-foreground">
+                    <span>Seite {auditPage} von {auditTotalPages} ({auditTotal} Einträge)</span>
+                    <div className="flex gap-1">
+                      <Button variant="outline" size="icon" className="h-7 w-7" disabled={auditPage <= 1} onClick={() => setAuditPage(p => p - 1)}>
+                        <ChevronLeft className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button variant="outline" size="icon" className="h-7 w-7" disabled={auditPage >= auditTotalPages} onClick={() => setAuditPage(p => p + 1)}>
+                        <ChevronRight className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
+
+        {/* ── Passwort ──────────────────────────────────────────────── */}
+        <TabsContent value="passwort" className="mt-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <KeyRound className="h-4 w-4" />
+                Passwort ändern
+              </CardTitle>
+              <CardDescription>Ändere dein eigenes Anmelde-Passwort.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <form onSubmit={handleChangePassword} className="space-y-3 max-w-sm">
+                <div className="space-y-1.5">
+                  <Label>Aktuelles Passwort</Label>
+                  <Input type="password" value={pwCurrent} onChange={e => setPwCurrent(e.target.value)} autoComplete="current-password" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Neues Passwort</Label>
+                  <Input type="password" value={pwNext} onChange={e => setPwNext(e.target.value)} autoComplete="new-password" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Neues Passwort bestätigen</Label>
+                  <Input type="password" value={pwConfirm} onChange={e => setPwConfirm(e.target.value)} autoComplete="new-password" />
+                </div>
+                {pwError && <p className="text-sm text-destructive">{pwError}</p>}
+                {pwSuccess && <p className="text-sm text-emerald-500">Passwort erfolgreich geändert.</p>}
+                <Button type="submit" disabled={pwLoading || !pwCurrent || !pwNext || !pwConfirm}>
+                  {pwLoading ? "Wird geändert..." : "Passwort ändern"}
                 </Button>
-                <Button variant="outline" size="icon" className="h-7 w-7" disabled={auditPage >= auditTotalPages} onClick={() => setAuditPage(p => p + 1)}>
-                  <ChevronRight className="h-3.5 w-3.5" />
-                </Button>
-              </div>
-            </div>
-          )}
-        </CardContent>
-      </Card>
-      </>)}
+              </form>
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
 
       {/* Dialogs */}
       <Dialog open={createDialog} onOpenChange={setCreateDialog}>
@@ -834,14 +1030,7 @@ export function Settings() {
               <div className="flex gap-4">
                 {(["User", "Admin"] as const).map(r => (
                   <label key={r} className="flex items-center gap-2 cursor-pointer text-sm">
-                    <input
-                      type="radio"
-                      name="role"
-                      value={r}
-                      checked={newRole === r}
-                      onChange={() => setNewRole(r)}
-                      className="h-4 w-4"
-                    />
+                    <input type="radio" name="role" value={r} checked={newRole === r} onChange={() => setNewRole(r)} className="h-4 w-4" />
                     <span>{r === "Admin" ? "Administrator" : "Benutzer (nur lesen)"}</span>
                   </label>
                 ))}
@@ -938,6 +1127,86 @@ export function Settings() {
             <Button variant="outline" onClick={() => setVersionDialog(false)}>Abbrechen</Button>
             <Button onClick={handleAddVersion} disabled={verLoading || !verVersion.trim()}>
               {verLoading ? "Hinzufügen..." : "Hinzufügen"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      {/* Device Notification Override Dialog */}
+      <Dialog open={notifyOverrideDialog !== null} onOpenChange={open => !open && setNotifyOverrideDialog(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{notifyOverrideDialog === "new" ? "Gerät hinzufügen" : "Einstellungen bearbeiten"}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            {notifyOverrideDialog === "new" && (
+              <div className="space-y-1.5">
+                <Label>Gerät</Label>
+                <Input
+                  placeholder="Hostname suchen..."
+                  value={overrideDeviceSearch}
+                  onChange={e => {
+                    setOverrideDeviceSearch(e.target.value);
+                    setOverrideDeviceId("");
+                  }}
+                  autoFocus
+                />
+                {overrideDeviceSearch && !overrideDeviceId && (
+                  <div className="rounded-md border border-border bg-popover shadow-md max-h-40 overflow-y-auto">
+                    {allDevices
+                      .filter(d => d.hostname.toLowerCase().includes(overrideDeviceSearch.toLowerCase()))
+                      .filter(d => !notifyOverrides.some(o => o.device.id === d.id))
+                      .map(d => (
+                        <button
+                          key={d.id}
+                          className="w-full text-left px-3 py-2 text-sm hover:bg-muted transition-colors"
+                          onClick={() => { setOverrideDeviceId(d.id); setOverrideDeviceSearch(d.hostname); }}
+                        >
+                          <span className="font-medium">{d.hostname}</span>
+                          {d.description && <span className="text-muted-foreground ml-2 text-xs">{d.description}</span>}
+                        </button>
+                      ))}
+                  </div>
+                )}
+                {overrideDeviceId && (
+                  <p className="text-xs text-emerald-500 flex items-center gap-1">
+                    <CheckCircle2 className="h-3.5 w-3.5" /> Gerät ausgewählt
+                  </p>
+                )}
+              </div>
+            )}
+            {notifyOverrideDialog !== "new" && (
+              <div className="text-sm font-medium">{(notifyOverrideDialog as DeviceNotificationOverride)?.device.hostname}</div>
+            )}
+            <div className="space-y-2">
+              <Label className="text-xs text-muted-foreground uppercase tracking-wide">Benachrichtigungen (Standard = globale Einstellung)</Label>
+              {([
+                { key: "alertOnOffline" as const, label: "Gerät offline" },
+                { key: "alertOnOnline" as const, label: "Gerät wieder online" },
+                { key: "alertOnSoftwareAlert" as const, label: "Blacklisted Software" },
+                { key: "alertOnDiskFull" as const, label: "Festplatte voll" },
+              ]).map(({ key, label }) => (
+                <div key={key} className="flex items-center gap-3">
+                  <select
+                    className="text-sm border rounded px-2 py-1 bg-background"
+                    value={overrideValues[key] === null ? "default" : overrideValues[key] ? "on" : "off"}
+                    onChange={e => {
+                      const v = e.target.value === "default" ? null : e.target.value === "on";
+                      setOverrideValues(prev => ({ ...prev, [key]: v }));
+                    }}
+                  >
+                    <option value="default">Standard</option>
+                    <option value="on">An</option>
+                    <option value="off">Aus</option>
+                  </select>
+                  <span className="text-sm">{label}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setNotifyOverrideDialog(null)}>Abbrechen</Button>
+            <Button onClick={handleSaveOverride} disabled={!overrideDeviceId && notifyOverrideDialog === "new"}>
+              Speichern
             </Button>
           </DialogFooter>
         </DialogContent>

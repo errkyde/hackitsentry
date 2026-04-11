@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Management;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
@@ -24,7 +25,8 @@ public class SystemInfoCollector
             RamUsedGB = GetRamUsedGB(),
             NetworkAdapters = GetNetworkAdapters(),
             DiskDrives = GetDiskDrives(),
-            InstalledSoftware = GetInstalledSoftware()
+            InstalledSoftware = GetInstalledSoftware(),
+            RustDeskId = GetRustDeskId()
         };
     }
 
@@ -35,6 +37,11 @@ public class SystemInfoCollector
             using var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion");
             var productName = key?.GetValue("ProductName")?.ToString() ?? "Unknown";
             var displayVersion = key?.GetValue("DisplayVersion")?.ToString() ?? "";
+
+            // ProductName still says "Windows 10" on Windows 11; fix via build number
+            if (int.TryParse(key?.GetValue("CurrentBuild")?.ToString(), out var build) && build >= 22000)
+                productName = productName.Replace("Windows 10", "Windows 11");
+
             return $"{productName} {displayVersion}".Trim();
         }
         catch { return Environment.OSVersion.VersionString; }
@@ -146,14 +153,43 @@ public class SystemInfoCollector
                 if (ni.OperationalStatus != OperationalStatus.Up) continue;
                 if (ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
 
-                var ipv4 = ni.GetIPProperties().UnicastAddresses
-                    .FirstOrDefault(a => a.Address.AddressFamily == AddressFamily.InterNetwork)
+                var props = ni.GetIPProperties();
+
+                var ipv4Info = props.UnicastAddresses
+                    .FirstOrDefault(a => a.Address.AddressFamily == AddressFamily.InterNetwork);
+                var ipv4 = ipv4Info?.Address.ToString() ?? "";
+                var subnetMask = ipv4Info?.IPv4Mask.ToString() ?? "";
+
+                var ipv6 = props.UnicastAddresses
+                    .Where(a => a.Address.AddressFamily == AddressFamily.InterNetworkV6
+                             && !a.Address.IsIPv6LinkLocal)
+                    .Select(a => a.Address.ToString())
+                    .FirstOrDefault() ?? "";
+
+                var gateway = props.GatewayAddresses
+                    .FirstOrDefault(g => g.Address.AddressFamily == AddressFamily.InterNetwork)
                     ?.Address.ToString() ?? "";
+
+                var dns = props.DnsAddresses
+                    .Where(a => a.AddressFamily == AddressFamily.InterNetwork)
+                    .Select(a => a.ToString())
+                    .ToList();
 
                 var mac = string.Join(":", ni.GetPhysicalAddress().GetAddressBytes()
                     .Select(b => b.ToString("X2")));
 
-                result.Add(new NetworkAdapterInfo(ni.Name, ipv4, mac));
+                var speedMbps = ni.Speed > 0 ? ni.Speed / 1_000_000 : 0;
+
+                var adapterType = ni.NetworkInterfaceType switch
+                {
+                    NetworkInterfaceType.Wireless80211 => "WLAN",
+                    NetworkInterfaceType.Ethernet => "Ethernet",
+                    NetworkInterfaceType.GigabitEthernet => "Gigabit Ethernet",
+                    NetworkInterfaceType.FastEthernetT or NetworkInterfaceType.FastEthernetFx => "Fast Ethernet",
+                    _ => ni.NetworkInterfaceType.ToString()
+                };
+
+                result.Add(new NetworkAdapterInfo(ni.Name, ipv4, mac, ipv6, subnetMask, gateway, dns, speedMbps, adapterType));
             }
         }
         catch { }
@@ -216,6 +252,80 @@ public class SystemInfoCollector
 
         return result.DistinctBy(s => s.Name).OrderBy(s => s.Name).ToList();
     }
+
+    public static string GetRustDeskId()
+    {
+        // Primary: ask RustDesk directly via CLI — works regardless of profile/service mode
+        var rustDeskExePaths = new[]
+        {
+            @"C:\Program Files\RustDesk\RustDesk.exe",
+            @"C:\Program Files (x86)\RustDesk\RustDesk.exe",
+        };
+        foreach (var exe in rustDeskExePaths)
+        {
+            if (!File.Exists(exe)) continue;
+            try
+            {
+                var psi = new ProcessStartInfo(exe, "--get-id")
+                {
+                    RedirectStandardOutput = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                };
+                using var proc = Process.Start(psi);
+                if (proc == null) continue;
+                // ReadToEnd on a background task with timeout to avoid hanging
+                var readTask = Task.Run(() => proc.StandardOutput.ReadToEnd());
+                if (readTask.Wait(TimeSpan.FromSeconds(5)))
+                {
+                    proc.WaitForExit(1000);
+                    if (!proc.HasExited) proc.Kill();
+                    var id = readTask.Result.Trim();
+                    if (!string.IsNullOrWhiteSpace(id)) return id;
+                }
+                else
+                {
+                    if (!proc.HasExited) proc.Kill();
+                }
+            }
+            catch { }
+        }
+
+        // Fallback: parse TOML config files across all known service/user profile paths
+        var baseProfiles = new[]
+        {
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RustDesk", "config"),
+            @"C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config",
+            @"C:\Windows\ServiceProfiles\NetworkService\AppData\Roaming\RustDesk\config",
+            @"C:\Windows\system32\config\systemprofile\AppData\Roaming\RustDesk\config",
+        };
+
+        foreach (var dir in baseProfiles)
+        {
+            foreach (var fileName in new[] { "RustDesk.toml", "RustDesk2.toml" })
+            {
+                var path = Path.Combine(dir, fileName);
+                try
+                {
+                    if (!File.Exists(path)) continue;
+                    foreach (var line in File.ReadAllLines(path))
+                    {
+                        var trimmed = line.Trim();
+                        // Match "id = ..." but not "enc_id" (encrypted ID, not the display ID)
+                        if (!trimmed.StartsWith("id ") && !trimmed.StartsWith("id=")) continue;
+                        var parts = trimmed.Split('=', 2);
+                        if (parts.Length == 2)
+                        {
+                            var id = parts[1].Trim().Trim('"', '\'');
+                            if (!string.IsNullOrEmpty(id)) return id;
+                        }
+                    }
+                }
+                catch { }
+            }
+        }
+        return "";
+    }
 }
 
 public record SystemInfo
@@ -232,8 +342,18 @@ public record SystemInfo
     public List<NetworkAdapterInfo> NetworkAdapters { get; init; } = [];
     public List<DiskDriveInfo> DiskDrives { get; init; } = [];
     public List<SoftwareInfo> InstalledSoftware { get; init; } = [];
+    public string RustDeskId { get; init; } = "";
 }
 
-public record NetworkAdapterInfo(string Name, string IpAddress, string MacAddress);
+public record NetworkAdapterInfo(
+    string Name,
+    string IpAddress,
+    string MacAddress,
+    string Ipv6Address,
+    string SubnetMask,
+    string Gateway,
+    List<string> DnsServers,
+    long SpeedMbps,
+    string AdapterType);
 public record DiskDriveInfo(string Drive, double TotalGB, double FreeGB);
 public record SoftwareInfo(string Name, string Version, string Publisher, string InstallDate);
