@@ -1,80 +1,62 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
-     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
 
-  <Package Name="HackIT Sentry Agent"
-           Manufacturer="HackIT"
+  <Product Id="*"
+           Name="HackIT Sentry Agent"
+           Language="1033"
            Version="1.0.13"
-           UpgradeCode="A7F34C2E-8B91-4D56-9E32-1A5C8F720E3D"
-           Scope="perMachine">
+           Manufacturer="HackIT"
+           UpgradeCode="A7F34C2E-8B91-4D56-9E32-1A5C8F720E3D">
+
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="x64" />
 
     <MajorUpgrade DowngradeErrorMessage="Eine neuere Version von HackIT Sentry Agent ist bereits installiert." />
+    <MediaTemplate EmbedCab="yes" />
 
-    <!-- Properties passed via command line: msiexec /i Setup.msi SERVERURL="..." DEPLOYKEY="..." -->
-    <Property Id="SERVERURL" Value="" />
-    <Property Id="DEPLOYKEY" Value="" />
+    <!-- Properties set via msiexec: SERVERURL="..." DEPLOYKEY="..." -->
+    <Property Id="SERVERURL" Secure="yes" />
+    <Property Id="DEPLOYKEY" Secure="yes" />
 
-    <StandardDirectory Id="ProgramFiles64Folder">
-      <Directory Id="INSTALLFOLDER" Name="HackITSentry">
-        <Directory Id="AGENTFOLDER" Name="Agent">
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="HackITSentry">
+          <Directory Id="AGENTFOLDER" Name="Agent">
 
-          <!-- Agent binary + Windows service registration -->
-          <Component Id="AgentExe" Guid="*">
-            <File Id="AgentExeFile"
-                  Source="files/HackITSentry.Agent.exe"
-                  KeyPath="yes" />
+            <Component Id="AgentExe" Guid="*" Win64="yes">
+              <File Id="AgentExeFile" Source="files/HackITSentry.Agent.exe" KeyPath="yes" />
+              <ServiceInstall Id="AgentService"
+                  Name="HackITSentryAgent"
+                  DisplayName="HackIT Sentry Agent"
+                  Description="HackIT Sentry Device Management Agent"
+                  Type="ownProcess"
+                  Start="auto"
+                  ErrorControl="normal"
+                  Interactive="no" />
+              <ServiceControl Id="AgentServiceControl"
+                  Name="HackITSentryAgent"
+                  Start="install"
+                  Stop="both"
+                  Remove="uninstall"
+                  Wait="yes" />
+            </Component>
 
-            <ServiceInstall Id="AgentService"
-                Name="HackITSentryAgent"
-                DisplayName="HackIT Sentry Agent"
-                Description="HackIT Sentry Device Management Agent"
-                Type="ownProcess"
-                Start="auto"
-                ErrorControl="normal"
-                Interactive="no" />
+            <Component Id="AppSettings" Guid="*" Win64="yes">
+              <File Id="AppSettingsFile" Source="files/appsettings.json" KeyPath="yes" />
+            </Component>
 
-            <ServiceControl Id="AgentServiceControl"
-                Name="HackITSentryAgent"
-                Start="install"
-                Stop="both"
-                Remove="uninstall"
-                Wait="yes" />
+          </Directory>
 
-            <util:ServiceConfig
-                ServiceName="HackITSentryAgent"
-                FirstFailureActionType="restart"
-                SecondFailureActionType="restart"
-                ThirdFailureActionType="restart"
-                RestartServiceDelayInSeconds="5"
-                ResetPeriodInDays="1" />
-          </Component>
-
-          <!-- Default appsettings.json (ServerUrl is overridden by registry at runtime) -->
-          <Component Id="AppSettings" Guid="*">
-            <File Id="AppSettingsFile"
-                  Source="files/appsettings.json"
-                  KeyPath="yes" />
+          <!-- Registry: server URL and deploy key (read by agent on startup) -->
+          <Component Id="RegistryConfig" Guid="*" Win64="yes">
+            <RegistryKey Root="HKLM" Key="SOFTWARE\HackIT Sentry" Action="createAndRemoveOnUninstall">
+              <RegistryValue Name="ServerUrl" Type="string" Value="[SERVERURL]" KeyPath="yes" />
+              <RegistryValue Name="DeployKey" Type="string" Value="[DEPLOYKEY]" />
+            </RegistryKey>
           </Component>
 
         </Directory>
-
-        <!-- Registry: server URL and deploy key (read by agent on startup) -->
-        <Component Id="RegistryConfig" Guid="*">
-          <RegistryKey Root="HKLM" Key="SOFTWARE\HackIT Sentry">
-            <RegistryValue Id="RegServerUrl"
-                Name="ServerUrl"
-                Value="[SERVERURL]"
-                Type="string"
-                KeyPath="yes" />
-            <RegistryValue Id="RegDeployKey"
-                Name="DeployKey"
-                Value="[DEPLOYKEY]"
-                Type="string" />
-          </RegistryKey>
-        </Component>
-
       </Directory>
-    </StandardDirectory>
+    </Directory>
 
     <Feature Id="ProductFeature" Level="1">
       <ComponentRef Id="AgentExe" />
@@ -82,5 +64,5 @@
       <ComponentRef Id="RegistryConfig" />
     </Feature>
 
-  </Package>
+  </Product>
 </Wix>

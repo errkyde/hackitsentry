@@ -36,16 +36,14 @@ RUN dotnet publish installer/Installer.csproj \
     -c Release -r win-x64 --self-contained true \
     -p:PublishSingleFile=true -o /installer-publish
 
-# ── Build MSI installer (WiX 4, cross-platform Linux build) ──────────────
+# ── Build MSI installer (wixl from msitools, Linux-native) ───────────────
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS msi-build
-RUN dotnet tool install --global wix --version 4.0.5
-ENV PATH="$PATH:/root/.dotnet/tools"
+RUN apt-get update && apt-get install -y --no-install-recommends msitools && rm -rf /var/lib/apt/lists/*
 WORKDIR /msi
-COPY installer-msi/ ./
+COPY installer-msi/Package.wxs .
+COPY installer-msi/files/appsettings.json ./files/appsettings.json
 COPY --from=agent-build /agent-publish/HackITSentry.Agent.exe ./files/HackITSentry.Agent.exe
-RUN wix extension add WixToolset.Util.wixext/4.0.5 && \
-    wix build Package.wxs -arch x64 -ext WixToolset.Util.wixext \
-        -o /msi-publish/HackITSentry-Setup.msi
+RUN mkdir -p /msi-publish && wixl -a x64 -o /msi-publish/HackITSentry-Setup.msi Package.wxs
 
 # ── Final image ───────────────────────────────────────────────────────────
 FROM base AS final
