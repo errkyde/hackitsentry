@@ -13,14 +13,16 @@ public class InstallController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly IConfiguration _config;
+    private readonly RuntimeSettings _runtimeSettings;
     private readonly AlertEmailService _email;
     private readonly InstallerService _installer;
     private readonly AuditService _audit;
 
-    public InstallController(AppDbContext db, IConfiguration config, AlertEmailService email, InstallerService installer, AuditService audit)
+    public InstallController(AppDbContext db, IConfiguration config, RuntimeSettings runtimeSettings, AlertEmailService email, InstallerService installer, AuditService audit)
     {
         _db = db;
         _config = config;
+        _runtimeSettings = runtimeSettings;
         _email = email;
         _installer = installer;
         _audit = audit;
@@ -81,9 +83,9 @@ public class InstallController : ControllerBase
         if (!_installer.IsAvailable)
             return StatusCode(503, "Installer nicht verfügbar.");
 
-        var outpostUrl = _config["OutpostPublicUrl"]?.TrimEnd('/');
-        if (string.IsNullOrEmpty(outpostUrl))
-            outpostUrl = $"{Request.Scheme}://{Request.Host}";
+        var outpostUrl = !string.IsNullOrEmpty(_runtimeSettings.AgentServerUrl)
+            ? _runtimeSettings.AgentServerUrl
+            : (_config["OutpostPublicUrl"]?.TrimEnd('/') ?? $"{Request.Scheme}://{Request.Host}");
 
         // Track first use + audit log
         if (!installToken.Used)
@@ -160,9 +162,9 @@ public class InstallController : ControllerBase
         if (token == null || token.Used || token.ExpiresAt < DateTime.UtcNow)
             return BadRequest(new { message = "Token ungültig oder abgelaufen." });
 
-        var outpostUrl = _config["OutpostPublicUrl"]?.TrimEnd('/');
-        if (string.IsNullOrEmpty(outpostUrl))
-            outpostUrl = $"{Request.Scheme}://{Request.Host}";
+        var outpostUrl = !string.IsNullOrEmpty(_runtimeSettings.AgentServerUrl)
+            ? _runtimeSettings.AgentServerUrl
+            : (_config["OutpostPublicUrl"]?.TrimEnd('/') ?? $"{Request.Scheme}://{Request.Host}");
         var downloadUrl = $"{outpostUrl}/install/{token.Token}";
         var senderName = User.FindFirstValue(ClaimTypes.Name) ?? "HackIT Sentry";
 

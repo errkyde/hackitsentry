@@ -24,6 +24,8 @@ public class AppDbContext : DbContext
     public DbSet<AgentVersion> AgentVersions { get; set; }
     public DbSet<InstallToken> InstallTokens { get; set; }
     public DbSet<DeviceNotificationOverride> DeviceNotificationOverrides { get; set; }
+    public DbSet<CustomFieldDefinition> CustomFieldDefinitions { get; set; }
+    public DbSet<CustomFieldValue> CustomFieldValues { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -104,6 +106,22 @@ public class AppDbContext : DbContext
 
         modelBuilder.Entity<AgentVersion>()
             .HasIndex(v => v.Version)
+            .IsUnique();
+
+        modelBuilder.Entity<CustomFieldValue>()
+            .HasOne(v => v.Definition)
+            .WithMany(d => d.Values)
+            .HasForeignKey(v => v.DefinitionId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<CustomFieldValue>()
+            .HasOne(v => v.Device)
+            .WithMany()
+            .HasForeignKey(v => v.DeviceId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<CustomFieldValue>()
+            .HasIndex(v => new { v.DefinitionId, v.DeviceId })
             .IsUnique();
     }
 }

@@ -5,10 +5,11 @@ import {
   Trash2, Activity, StickyNote, Terminal, Plus, Send, CheckCircle2, Monitor
 } from "lucide-react";
 import {
-  devices, customers, groups, agentVersions,
+  devices, customers, groups, agentVersions, customFields,
   type DeviceDetail as DeviceDetailType,
   type Software, type LicenseInfo, type Customer, type Group,
-  type DeviceNote, type DeviceCommand
+  type DeviceNote, type DeviceCommand, type DeviceHistory,
+  type CustomFieldWithValue,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -100,6 +101,15 @@ export function DeviceDetail() {
   const [expiryInput, setExpiryInput] = useState("");
   const [expirySaving, setExpirySaving] = useState(false);
 
+  // History state
+  const [history, setHistory] = useState<DeviceHistory | null>(null);
+  const [historyDays, setHistoryDays] = useState(30);
+
+  // Custom fields state
+  const [fieldValues, setFieldValues] = useState<CustomFieldWithValue[]>([]);
+  const [fieldEdits, setFieldEdits] = useState<Record<string, string>>({});
+  const [fieldSaving, setFieldSaving] = useState(false);
+
   const loadData = (showLoading = false) => {
     if (!id) return;
     if (showLoading) setRefreshing(true);
@@ -129,6 +139,11 @@ export function DeviceDetail() {
       const latest = vers.find(v => v.isLatest);
       if (latest?.downloadUrl) setLatestAgentDownloadUrl(latest.downloadUrl);
     }).catch(() => {});
+    devices.getHistory(id, historyDays).then(setHistory).catch(() => {});
+    customFields.getValues(id).then(vals => {
+      setFieldValues(vals);
+      setFieldEdits(Object.fromEntries(vals.map(v => [v.id, v.value])));
+    }).catch(() => {});
     devices.getLicense(id).then(l => {
       setLicense(l);
       if (l) setExpiryInput(l.expiresAt ? new Date(l.expiresAt).toISOString().split("T")[0] : "");
@@ -136,6 +151,17 @@ export function DeviceDetail() {
   };
 
   useEffect(() => { loadData(); }, [id]);
+  useEffect(() => {
+    if (id) devices.getHistory(id, historyDays).then(setHistory).catch(() => {});
+  }, [id, historyDays]);
+
+  const handleSaveFields = async () => {
+    if (!id) return;
+    setFieldSaving(true);
+    const payload = fieldValues.map(f => ({ definitionId: f.id, value: fieldEdits[f.id] ?? "" }));
+    await customFields.saveValues(id, payload).catch(() => {});
+    setFieldSaving(false);
+  };
 
   const handleSave = async () => {
     if (!id) return;
@@ -349,6 +375,33 @@ export function DeviceDetail() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Custom Fields */}
+      {fieldValues.length > 0 && (
+        <Card>
+          <CardContent className="pt-4 pb-4">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+              {fieldValues.map(f => (
+                <div key={f.id} className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{f.name}</label>
+                  <Input
+                    value={fieldEdits[f.id] ?? ""}
+                    onChange={e => setFieldEdits(prev => ({ ...prev, [f.id]: e.target.value }))}
+                    placeholder="—"
+                    className="h-8 text-sm"
+                  />
+                </div>
+              ))}
+            </div>
+            <div className="flex justify-end mt-3">
+              <Button size="sm" variant="outline" onClick={handleSaveFields} disabled={fieldSaving}>
+                <Save className="h-3.5 w-3.5 mr-1.5" />
+                {fieldSaving ? "Speichern..." : "Felder speichern"}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Tabs */}
       <Tabs defaultValue="hardware">
@@ -797,54 +850,70 @@ export function DeviceDetail() {
 
         {/* History */}
         <TabsContent value="history">
-          <Card>
-            <CardContent className="pt-6">
-              {device.recentCheckins.length === 0 ? (
-                <p className="text-sm text-muted-foreground">Noch keine Check-in-Daten vorhanden.</p>
-              ) : (
-                <div className="space-y-4">
-                  <div>
-                    <p className="text-xs text-muted-foreground mb-2">RAM-Auslastung (letzte Check-ins)</p>
-                    <div className="flex items-end gap-0.5 h-16">
-                      {[...device.recentCheckins].reverse().map((c, i) => {
-                        const pct = device.ramTotalGB > 0 ? ((c.ramUsedGB ?? 0) / device.ramTotalGB) * 100 : 0;
-                        return (
-                          <div
-                            key={i}
-                            title={`${(c.ramUsedGB ?? 0).toFixed(1)} / ${device.ramTotalGB} GB — ${new Date(c.checkedInAt).toLocaleString("de-DE")}`}
-                            className={cn(
-                              "flex-1 min-w-[4px] rounded-sm transition-all",
-                              pct > 90 ? "bg-destructive" : pct > 70 ? "bg-amber-500" : "bg-primary"
-                            )}
-                            style={{ height: `${Math.max(4, pct)}%` }}
-                          />
-                        );
-                      })}
-                    </div>
-                  </div>
+          <div className="space-y-4">
+            {/* Controls */}
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-muted-foreground">
+                {history ? `${history.checkins.length} Check-ins · ${history.downtimes.length} Ausfälle` : "Lade…"}
+              </p>
+              <Select value={String(historyDays)} onValueChange={v => setHistoryDays(Number(v))}>
+                <SelectTrigger className="w-36">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="7">Letzte 7 Tage</SelectItem>
+                  <SelectItem value="14">Letzte 14 Tage</SelectItem>
+                  <SelectItem value="30">Letzte 30 Tage</SelectItem>
+                  <SelectItem value="90">Letzte 90 Tage</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
 
-                  <div className="rounded-md border border-border overflow-hidden max-h-72 overflow-y-auto">
+            {/* Downtime list */}
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm">Ausfallzeiten</CardTitle>
+              </CardHeader>
+              <CardContent className="pt-0">
+                {!history || history.downtimes.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    {history ? "Keine Ausfälle im gewählten Zeitraum." : "Laden…"}
+                  </p>
+                ) : (
+                  <div className="rounded-md border border-border overflow-hidden">
                     <table className="w-full text-sm">
-                      <thead className="sticky top-0 bg-muted/50">
+                      <thead className="bg-muted/30">
                         <tr>
-                          <th className="text-left px-3 py-2 font-medium text-muted-foreground">Zeitpunkt</th>
-                          <th className="text-left px-3 py-2 font-medium text-muted-foreground">RAM belegt</th>
-                          <th className="text-left px-3 py-2 font-medium text-muted-foreground">Festplatten</th>
+                          <th className="text-left px-3 py-2 font-medium text-muted-foreground">Offline seit</th>
+                          <th className="text-left px-3 py-2 font-medium text-muted-foreground">Wieder online</th>
+                          <th className="text-left px-3 py-2 font-medium text-muted-foreground">Dauer</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {device.recentCheckins.map((c, i) => {
-                          const disks: Array<{ drive: string; freeGB: number; totalGB: number }> = JSON.parse(c.diskDrivesJson || "[]");
+                        {[...history.downtimes].reverse().map((d, i) => {
+                          const mins = d.durationMinutes;
+                          const dur = mins >= 1440
+                            ? `${Math.floor(mins / 1440)}d ${Math.floor((mins % 1440) / 60)}h`
+                            : mins >= 60
+                            ? `${Math.floor(mins / 60)}h ${mins % 60}m`
+                            : `${mins}m`;
                           return (
                             <tr key={i} className="border-t border-border/50">
-                              <td className="px-3 py-2 text-xs text-muted-foreground">
-                                {new Date(c.checkedInAt).toLocaleString("de-DE")}
+                              <td className="px-3 py-2 text-xs">
+                                {new Date(d.from).toLocaleString("de-DE")}
+                              </td>
+                              <td className="px-3 py-2 text-xs">
+                                {new Date(d.to).toLocaleString("de-DE")}
                               </td>
                               <td className="px-3 py-2">
-                                {(c.ramUsedGB ?? 0).toFixed(1)} / {device.ramTotalGB} GB
-                              </td>
-                              <td className="px-3 py-2 text-xs text-muted-foreground">
-                                {disks.map(d => `${d.drive} ${((d.totalGB ?? 0) - (d.freeGB ?? 0)).toFixed(0)}/${(d.totalGB ?? 0).toFixed(0)}GB`).join(" · ")}
+                                <span className={cn(
+                                  "text-xs font-medium px-2 py-0.5 rounded-full",
+                                  mins >= 1440 ? "bg-rose-500/15 text-rose-600 dark:text-rose-400" :
+                                  mins >= 120  ? "bg-amber-500/15 text-amber-600 dark:text-amber-400" :
+                                                 "bg-muted text-muted-foreground"
+                                )}>
+                                  {dur}
+                                </span>
                               </td>
                             </tr>
                           );
@@ -852,10 +921,70 @@ export function DeviceDetail() {
                       </tbody>
                     </table>
                   </div>
-                </div>
-              )}
-            </CardContent>
-          </Card>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* RAM chart */}
+            {history && history.checkins.length > 0 && (
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-sm">RAM-Auslastung</CardTitle>
+                </CardHeader>
+                <CardContent className="pt-0">
+                  <div className="flex items-end gap-0.5 h-16">
+                    {history.checkins.map((c, i) => {
+                      const pct = device.ramTotalGB > 0 ? (c.ramUsedGB / device.ramTotalGB) * 100 : 0;
+                      return (
+                        <div
+                          key={i}
+                          title={`${c.ramUsedGB.toFixed(1)} / ${device.ramTotalGB} GB — ${new Date(c.checkedInAt).toLocaleString("de-DE")}`}
+                          className={cn(
+                            "flex-1 min-w-[2px] rounded-sm",
+                            pct > 90 ? "bg-destructive" : pct > 70 ? "bg-amber-500" : "bg-primary"
+                          )}
+                          style={{ height: `${Math.max(4, pct)}%` }}
+                        />
+                      );
+                    })}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Checkin table */}
+            {history && history.checkins.length > 0 && (
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-sm">Check-in Verlauf</CardTitle>
+                </CardHeader>
+                <CardContent className="pt-0">
+                  <div className="rounded-md border border-border overflow-hidden max-h-72 overflow-y-auto">
+                    <table className="w-full text-sm">
+                      <thead className="sticky top-0 bg-muted/50">
+                        <tr>
+                          <th className="text-left px-3 py-2 font-medium text-muted-foreground">Zeitpunkt</th>
+                          <th className="text-left px-3 py-2 font-medium text-muted-foreground">RAM belegt</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {[...history.checkins].reverse().map((c, i) => (
+                          <tr key={i} className="border-t border-border/50">
+                            <td className="px-3 py-2 text-xs text-muted-foreground">
+                              {new Date(c.checkedInAt).toLocaleString("de-DE")}
+                            </td>
+                            <td className="px-3 py-2 text-xs">
+                              {c.ramUsedGB.toFixed(1)} / {device.ramTotalGB} GB
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+          </div>
         </TabsContent>
       </Tabs>
 

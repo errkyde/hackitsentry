@@ -214,6 +214,34 @@ using (var scope = app.Services.CreateScope())
             ON "DeviceNotificationOverrides" ("DeviceId")
         """);
 
+    db.Database.ExecuteSqlRaw("""
+        CREATE TABLE IF NOT EXISTS "CustomFieldDefinitions" (
+            "Id"        uuid NOT NULL DEFAULT gen_random_uuid(),
+            "Name"      text NOT NULL DEFAULT '',
+            "SortOrder" integer NOT NULL DEFAULT 0,
+            CONSTRAINT "PK_CustomFieldDefinitions" PRIMARY KEY ("Id")
+        )
+        """);
+
+    db.Database.ExecuteSqlRaw("""
+        CREATE TABLE IF NOT EXISTS "CustomFieldValues" (
+            "Id"           uuid NOT NULL DEFAULT gen_random_uuid(),
+            "DefinitionId" uuid NOT NULL,
+            "DeviceId"     uuid NOT NULL,
+            "Value"        text NOT NULL DEFAULT '',
+            CONSTRAINT "PK_CustomFieldValues" PRIMARY KEY ("Id"),
+            CONSTRAINT "FK_CustomFieldValues_Definitions" FOREIGN KEY ("DefinitionId")
+                REFERENCES "CustomFieldDefinitions" ("Id") ON DELETE CASCADE,
+            CONSTRAINT "FK_CustomFieldValues_Devices" FOREIGN KEY ("DeviceId")
+                REFERENCES "Devices" ("Id") ON DELETE CASCADE
+        )
+        """);
+
+    db.Database.ExecuteSqlRaw("""
+        CREATE UNIQUE INDEX IF NOT EXISTS "IX_CustomFieldValues_DefinitionId_DeviceId"
+            ON "CustomFieldValues" ("DefinitionId", "DeviceId")
+        """);
+
     // Bootstrap RuntimeSettings: env/appsettings first, then DB overrides
     var runtimeSettings = app.Services.GetRequiredService<RuntimeSettings>();
     runtimeSettings.LoadFromConfig(app.Configuration);

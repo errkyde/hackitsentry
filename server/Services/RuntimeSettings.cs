@@ -26,6 +26,12 @@ public class RuntimeSettings
     public string EmailTo { get; set; } = "";
     public bool EmailUseSsl { get; set; } = false;
 
+    // Public URL of the agent/outpost server (used for installer links)
+    public string AgentServerUrl { get; set; } = "";
+
+    // Agent auto-update
+    public bool AutoUpdateAgents { get; set; } = false;
+
     // Notification defaults
     public bool NotifyDeviceOffline { get; set; } = true;
     public bool NotifyDeviceOnline { get; set; } = true;
@@ -40,6 +46,7 @@ public class RuntimeSettings
     public void LoadFromConfig(IConfiguration config)
     {
         CheckinIntervalMinutes = config.GetValue<int>("CheckinIntervalMinutes", 30);
+        AgentServerUrl = config["OutpostPublicUrl"] ?? "";
         // Seed RustDeskRelayHost from env var (legacy RUSTDESK_PUBLIC_HOST) if not in DB yet
         RustDeskRelayHost = config["RustDeskPublicHost"] ?? "";
         EmailHost = config["Email:Host"] ?? "";
@@ -67,6 +74,8 @@ public class RuntimeSettings
         if (d.TryGetValue("Email:From", out var from) && !string.IsNullOrEmpty(from)) EmailFrom = from;
         if (d.TryGetValue("Email:To", out var to)) EmailTo = to;
         if (d.TryGetValue("Email:UseSsl", out var ssl) && bool.TryParse(ssl, out var useSsl)) EmailUseSsl = useSsl;
+        if (d.TryGetValue("AgentServerUrl", out var serverUrl) && !string.IsNullOrEmpty(serverUrl)) AgentServerUrl = serverUrl;
+        if (d.TryGetValue("Agent:AutoUpdate", out var autoUpd) && bool.TryParse(autoUpd, out var autoUpdate)) AutoUpdateAgents = autoUpdate;
         if (d.TryGetValue("Notify:DeviceOffline", out var nOff) && bool.TryParse(nOff, out var notifyOff)) NotifyDeviceOffline = notifyOff;
         if (d.TryGetValue("Notify:DeviceOnline", out var nOn) && bool.TryParse(nOn, out var notifyOn)) NotifyDeviceOnline = notifyOn;
         if (d.TryGetValue("Notify:NewPending", out var nPend) && bool.TryParse(nPend, out var notifyPend)) NotifyNewPending = notifyPend;

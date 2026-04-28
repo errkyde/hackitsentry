@@ -32,8 +32,25 @@ public class SettingsController : ControllerBase
     {
         return Ok(new
         {
-            checkinIntervalMinutes = _runtimeSettings.CheckinIntervalMinutes
+            checkinIntervalMinutes = _runtimeSettings.CheckinIntervalMinutes,
+            agentServerUrl = _runtimeSettings.AgentServerUrl,
         });
+    }
+
+    // PUT /api/settings/server-url
+    [HttpPut("server-url")]
+    public async Task<IActionResult> SaveServerUrl([FromBody] ServerUrlRequest req)
+    {
+        _runtimeSettings.AgentServerUrl = req.AgentServerUrl?.TrimEnd('/') ?? "";
+
+        var existing = await _db.AppSettings.FindAsync("AgentServerUrl");
+        if (existing != null)
+            existing.Value = _runtimeSettings.AgentServerUrl;
+        else
+            _db.AppSettings.Add(new AppSetting { Key = "AgentServerUrl", Value = _runtimeSettings.AgentServerUrl });
+
+        await _db.SaveChangesAsync();
+        return Ok(new { message = "Server-URL gespeichert.", agentServerUrl = _runtimeSettings.AgentServerUrl });
     }
 
     // PUT /api/settings/checkin
@@ -128,6 +145,27 @@ public class SettingsController : ControllerBase
         return Ok(new { diskAlertThresholdPercent = threshold });
     }
 
+    // GET /api/settings/agent
+    [HttpGet("agent")]
+    public IActionResult GetAgentSettings()
+    {
+        return Ok(new { autoUpdate = _runtimeSettings.AutoUpdateAgents });
+    }
+
+    // PUT /api/settings/agent
+    [HttpPut("agent")]
+    public async Task<IActionResult> SaveAgentSettings([FromBody] AgentSettingsRequest req)
+    {
+        _runtimeSettings.AutoUpdateAgents = req.AutoUpdate;
+        var existing = await _db.AppSettings.FindAsync("Agent:AutoUpdate");
+        if (existing != null)
+            existing.Value = req.AutoUpdate.ToString();
+        else
+            _db.AppSettings.Add(new AppSetting { Key = "Agent:AutoUpdate", Value = req.AutoUpdate.ToString() });
+        await _db.SaveChangesAsync();
+        return Ok(new { message = "Agent-Einstellungen gespeichert." });
+    }
+
     // GET /api/settings/rustdesk
     [HttpGet("rustdesk")]
     public IActionResult GetRustDeskSettings()
@@ -191,3 +229,5 @@ public record EmailSettingsRequest(
 public record AlertSettingsRequest(int DiskAlertThresholdPercent);
 public record CheckinSettingsRequest(int CheckinIntervalMinutes);
 public record RustDeskSettingsRequest(string? RelayHost, string? PublicKey, bool AutoInstall, string? DownloadUrl);
+public record AgentSettingsRequest(bool AutoUpdate);
+public record ServerUrlRequest(string? AgentServerUrl);

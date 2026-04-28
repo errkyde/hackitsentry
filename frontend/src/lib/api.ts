@@ -57,10 +57,14 @@ export const notifications = {
 
 // Settings
 export const settings = {
-  get: () => request<{ checkinIntervalMinutes: number }>("/api/settings"),
+  get: () => request<{ checkinIntervalMinutes: number; agentServerUrl: string }>("/api/settings"),
   saveCheckin: (checkinIntervalMinutes: number) =>
     request<{ message: string; checkinIntervalMinutes: number }>("/api/settings/checkin", {
       method: "PUT", body: JSON.stringify({ checkinIntervalMinutes }),
+    }),
+  saveServerUrl: (agentServerUrl: string) =>
+    request<{ message: string; agentServerUrl: string }>("/api/settings/server-url", {
+      method: "PUT", body: JSON.stringify({ agentServerUrl }),
     }),
   getEmail: () => request<EmailSettings>("/api/settings/email"),
   saveEmail: (data: EmailSettingsInput) =>
@@ -70,6 +74,21 @@ export const settings = {
   getRustDesk: () => request<RustDeskSettings>("/api/settings/rustdesk"),
   saveRustDesk: (data: RustDeskSettings) =>
     request<{ message: string }>("/api/settings/rustdesk", { method: "PUT", body: JSON.stringify(data) }),
+  getAgentSettings: () => request<{ autoUpdate: boolean }>("/api/settings/agent"),
+  saveAgentSettings: (autoUpdate: boolean) =>
+    request<{ message: string }>("/api/settings/agent", { method: "PUT", body: JSON.stringify({ autoUpdate }) }),
+};
+
+// Custom Fields
+export const customFields = {
+  getDefinitions: () => request<CustomFieldDefinition[]>("/api/custom-fields"),
+  createDefinition: (name: string) =>
+    request<CustomFieldDefinition>("/api/custom-fields", { method: "POST", body: JSON.stringify({ name }) }),
+  deleteDefinition: (id: string) =>
+    request("/api/custom-fields/" + id, { method: "DELETE" }),
+  getValues: (deviceId: string) => request<CustomFieldWithValue[]>("/api/custom-fields/values/" + deviceId),
+  saveValues: (deviceId: string, values: { definitionId: string; value: string }[]) =>
+    request<{ message: string }>("/api/custom-fields/values/" + deviceId, { method: "PUT", body: JSON.stringify(values) }),
 };
 
 // Auth
@@ -131,6 +150,7 @@ export const devices = {
   getAlertSettings: () => request<{ diskAlertThresholdPercent: number }>("/api/settings/alerts"),
   saveAlertSettings: (diskAlertThresholdPercent: number) =>
     request<{ message: string }>("/api/settings/alerts", { method: "PUT", body: JSON.stringify({ diskAlertThresholdPercent }) }),
+  getHistory: (id: string, days = 30) => request<DeviceHistory>(`/api/devices/${id}/history?days=${days}`),
 };
 
 // Dashboard
@@ -452,6 +472,22 @@ export interface DeviceNotificationOverride {
   alertOnOnline: boolean | null;
   alertOnSoftwareAlert: boolean | null;
   alertOnDiskFull: boolean | null;
+}
+
+export interface CustomFieldDefinition {
+  id: string;
+  name: string;
+  sortOrder: number;
+}
+
+export interface CustomFieldWithValue extends CustomFieldDefinition {
+  value: string;
+}
+
+export interface DeviceHistory {
+  checkins: Array<{ checkedInAt: string; ramUsedGB: number }>;
+  downtimes: Array<{ from: string; to: string; durationMinutes: number }>;
+  thresholdMinutes: number;
 }
 
 export interface DashboardData {

@@ -46,6 +46,8 @@ export function Devices() {
   const [statusFilter, setStatusFilter] = useState(searchParams.get("status") ?? "all");
   const [groupFilter, setGroupFilter] = useState("all");
   const [customerFilter, setCustomerFilter] = useState("all");
+  const [osFilter, setOsFilter] = useState("all");
+  const [ramFilter, setRamFilter] = useState("all");
 
   // Bulk selection
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -55,17 +57,31 @@ export function Devices() {
   const [bulkLoading, setBulkLoading] = useState(false);
   const [installDialog, setInstallDialog] = useState(false);
 
+  const RAM_RANGES: Record<string, { minRam?: number; maxRam?: number }> = {
+    "lt4":   { maxRam: 3.9 },
+    "4to8":  { minRam: 4, maxRam: 8 },
+    "8to16": { minRam: 8.1, maxRam: 16 },
+    "16to32":{ minRam: 16.1, maxRam: 32 },
+    "gt32":  { minRam: 32.1 },
+  };
+
   const fetchDevices = useCallback(async () => {
     const params: Record<string, string> = {};
     if (search) params.search = search;
     if (groupFilter !== "all") params.groupId = groupFilter;
     if (customerFilter !== "all") params.customerId = customerFilter;
     if (statusFilter !== "all") params.status = statusFilter;
+    if (osFilter !== "all") params.os = osFilter;
+    if (ramFilter !== "all") {
+      const range = RAM_RANGES[ramFilter];
+      if (range?.minRam) params.minRam = String(range.minRam);
+      if (range?.maxRam) params.maxRam = String(range.maxRam);
+    }
 
     const data = await devices.list(params);
     setDeviceList(data);
     setSelected(new Set());
-  }, [search, groupFilter, customerFilter, statusFilter]);
+  }, [search, groupFilter, customerFilter, statusFilter, osFilter, ramFilter]);
 
   useEffect(() => {
     Promise.all([customers.list(), groups.list(), devices.getStats()])
@@ -235,6 +251,33 @@ export function Devices() {
             {customerList.map((c) => (
               <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
             ))}
+          </SelectContent>
+        </Select>
+        <Select value={osFilter} onValueChange={setOsFilter}>
+          <SelectTrigger className="w-40">
+            <SelectValue placeholder="Betriebssystem" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Alle OS</SelectItem>
+            <SelectItem value="Windows 11">Windows 11</SelectItem>
+            <SelectItem value="Windows 10">Windows 10</SelectItem>
+            <SelectItem value="Windows Server 2025">Server 2025</SelectItem>
+            <SelectItem value="Windows Server 2022">Server 2022</SelectItem>
+            <SelectItem value="Windows Server 2019">Server 2019</SelectItem>
+            <SelectItem value="Windows Server 2016">Server 2016</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select value={ramFilter} onValueChange={setRamFilter}>
+          <SelectTrigger className="w-36">
+            <SelectValue placeholder="RAM" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Alle RAM</SelectItem>
+            <SelectItem value="lt4">&lt; 4 GB</SelectItem>
+            <SelectItem value="4to8">4 – 8 GB</SelectItem>
+            <SelectItem value="8to16">8 – 16 GB</SelectItem>
+            <SelectItem value="16to32">16 – 32 GB</SelectItem>
+            <SelectItem value="gt32">&gt; 32 GB</SelectItem>
           </SelectContent>
         </Select>
       </div>

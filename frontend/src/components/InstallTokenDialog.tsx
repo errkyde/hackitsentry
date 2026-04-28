@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { Download, Trash2, Plus, CheckCircle2, Link, Mail, Send } from "lucide-react";
-import { installTokens, type InstallToken } from "@/lib/api";
+import { Download, Trash2, Plus, CheckCircle2, Link, Send } from "lucide-react";
+import { installTokens, settings, type InstallToken } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -11,12 +11,9 @@ interface Props {
   onClose: () => void;
 }
 
-function getDownloadUrl(token: string) {
-  return `${window.location.origin}/install/${token}`;
-}
-
 export function InstallTokenDialog({ open, onClose }: Props) {
   const [tokens, setTokens] = useState<InstallToken[]>([]);
+  const [agentServerUrl, setAgentServerUrl] = useState("");
   const [expiry, setExpiry] = useState(24);
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
@@ -24,8 +21,16 @@ export function InstallTokenDialog({ open, onClose }: Props) {
   const [emailSent, setEmailSent] = useState<string | null>(null);
   const [emailError, setEmailError] = useState<string | null>(null);
 
+  function getDownloadUrl(token: string) {
+    const base = agentServerUrl || window.location.origin;
+    return `${base}/install/${token}`;
+  }
+
   useEffect(() => {
-    if (open) installTokens.list().then(setTokens).catch(() => {});
+    if (open) {
+      installTokens.list().then(setTokens).catch(() => {});
+      settings.get().then(s => setAgentServerUrl(s.agentServerUrl || "")).catch(() => {});
+    }
   }, [open]);
 
   const handleCreate = async () => {
@@ -114,7 +119,8 @@ export function InstallTokenDialog({ open, onClose }: Props) {
                       <span className="font-mono text-xs text-muted-foreground truncate">{t.token}</span>
                     </div>
                     <div className="text-xs text-muted-foreground">
-                      Von <strong>{t.createdByUsername}</strong> · {new Date(t.expiresAt).toLocaleString("de-DE", { dateStyle: "short", timeStyle: "short" })}
+                      Von <strong>{t.createdByUsername}</strong> · {new Date(t.createdAt).toLocaleString("de-DE", { dateStyle: "short", timeStyle: "short" })}
+                      {` · Läuft ab: ${new Date(t.expiresAt).toLocaleString("de-DE", { dateStyle: "short", timeStyle: "short" })}`}
                       {t.used && t.usedAt && ` · Verwendet: ${new Date(t.usedAt).toLocaleString("de-DE", { dateStyle: "short", timeStyle: "short" })}`}
                     </div>
                   </div>

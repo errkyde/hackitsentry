@@ -136,6 +136,38 @@ public class DevicesController : ControllerBase
         return Ok(MapToDetailDto(device, onlineThreshold));
     }
 
+    // GET /api/devices/{id}/history
+    [HttpGet("{id:guid}/history")]
+    public async Task<IActionResult> GetHistory(Guid id, [FromQuery] int days = 30)
+    {
+        days = Math.Clamp(days, 1, 90);
+        var since = DateTime.UtcNow.AddDays(-days);
+        var thresholdMinutes = _runtimeSettings.CheckinIntervalMinutes * 2 + 5;
+
+        var checkins = await _db.DeviceCheckins
+            .Where(c => c.DeviceId == id && c.CheckedInAt >= since)
+            .OrderBy(c => c.CheckedInAt)
+            .Select(c => new { c.CheckedInAt, c.RamUsedGB })
+            .ToListAsync();
+
+        var downtimes = new List<object>();
+        for (int i = 1; i < checkins.Count; i++)
+        {
+            var gap = checkins[i].CheckedInAt - checkins[i - 1].CheckedInAt;
+            if (gap.TotalMinutes > thresholdMinutes)
+            {
+                downtimes.Add(new
+                {
+                    from = checkins[i - 1].CheckedInAt,
+                    to = checkins[i].CheckedInAt,
+                    durationMinutes = (int)gap.TotalMinutes
+                });
+            }
+        }
+
+        return Ok(new { checkins, downtimes, thresholdMinutes });
+    }
+
     // PATCH /api/devices/{id}
     [HttpPatch("{id:guid}")]
     public async Task<IActionResult> PatchDevice(Guid id, [FromBody] PatchDeviceRequest request)

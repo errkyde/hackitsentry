@@ -19,6 +19,8 @@ services:
       context: .
       dockerfile: server/Dockerfile
     restart: unless-stopped
+    labels:
+      - "arcane.update.skip=true"
     depends_on:
       db:
         condition: service_healthy
@@ -63,6 +65,8 @@ services:
       context: .
       dockerfile: frontend/Dockerfile
     restart: unless-stopped
+    labels:
+      - "arcane.update.skip=true"
     depends_on:
       - server
     ports:

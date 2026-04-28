@@ -59,6 +59,17 @@ public class AgentController : ControllerBase
         _db.PendingDevices.Add(pending);
         await _db.SaveChangesAsync();
 
+        if (_runtimeSettings.NotifyNewPending && _runtimeSettings.IsEmailConfigured)
+        {
+            var rows = new[] { (pending.Hostname, $"{pending.WindowsVersion} · {pending.CpuModel} · {pending.RamTotalGB} GB RAM", (string?)"Wartet auf Freigabe") };
+            _ = _email.SendAsync(
+                "[HackIT Sentry] Neues Gerät wartet auf Genehmigung",
+                AlertEmailService.BuildHtml(
+                    "#ea580c", "Neues Gerät",
+                    "Ein Gerät hat sich registriert und wartet auf Freigabe",
+                    AlertEmailService.DeviceRows(rows)));
+        }
+
         return Ok(new { status = "Pending", id = pending.Id });
     }
 
@@ -151,6 +162,31 @@ public class AgentController : ControllerBase
             .Where(v => v.IsLatest)
             .Select(v => new { v.Version, v.DownloadUrl })
             .FirstOrDefaultAsync();
+
+        // Auto-update: queue ForceUpdate if enabled and a newer version exists
+        if (_runtimeSettings.AutoUpdateAgents
+            && latestVersion != null
+            && !string.IsNullOrEmpty(device.AgentVersion)
+            && latestVersion.Version != device.AgentVersion)
+        {
+            var alreadyQueued = await _db.DeviceCommands.AnyAsync(c =>
+                c.DeviceId == device.Id &&
+                c.CommandType == CommandType.ForceUpdate &&
+                (c.Status == CommandStatus.Pending || c.Status == CommandStatus.Sent));
+
+            if (!alreadyQueued)
+            {
+                _db.DeviceCommands.Add(new DeviceCommand
+                {
+                    DeviceId = device.Id,
+                    CommandType = CommandType.ForceUpdate,
+                    IssuedByUsername = "system",
+                });
+                await _db.SaveChangesAsync();
+                hasPendingCommands = true;
+                _notifier.NotifyDevice(device.Id);
+            }
+        }
 
         return Ok(new
         {
