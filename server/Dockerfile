@@ -38,7 +38,9 @@ RUN dotnet publish installer/Installer.csproj \
 
 # ── Build MSI installer (wixl from msitools, Linux-native) ───────────────
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS msi-build
-RUN apt-get update && apt-get install -y --no-install-recommends msitools && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y \
+    msitools python3-gi gir1.2-libmsi-1.0 \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /msi
 COPY installer-msi/Package.wxs .
 COPY installer-msi/files/appsettings.json ./files/appsettings.json
