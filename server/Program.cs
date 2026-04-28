@@ -242,6 +242,23 @@ using (var scope = app.Services.CreateScope())
             ON "CustomFieldValues" ("DefinitionId", "DeviceId")
         """);
 
+    db.Database.ExecuteSqlRaw("""
+        CREATE TABLE IF NOT EXISTS "DeployKeys" (
+            "Id"                  uuid NOT NULL DEFAULT gen_random_uuid(),
+            "Key"                 text NOT NULL DEFAULT '',
+            "Name"                text NOT NULL DEFAULT '',
+            "CreatedByUsername"   text NOT NULL DEFAULT '',
+            "CreatedAt"           timestamp with time zone NOT NULL DEFAULT now(),
+            "LastUsedAt"          timestamp with time zone,
+            CONSTRAINT "PK_DeployKeys" PRIMARY KEY ("Id")
+        )
+        """);
+
+    db.Database.ExecuteSqlRaw("""
+        CREATE UNIQUE INDEX IF NOT EXISTS "IX_DeployKeys_Key"
+            ON "DeployKeys" ("Key")
+        """);
+
     // Bootstrap RuntimeSettings: env/appsettings first, then DB overrides
     var runtimeSettings = app.Services.GetRequiredService<RuntimeSettings>();
     runtimeSettings.LoadFromConfig(app.Configuration);

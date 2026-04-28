@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+
+  <Package Name="HackIT Sentry Agent"
+           Manufacturer="HackIT"
+           Version="1.0.13"
+           UpgradeCode="A7F34C2E-8B91-4D56-9E32-1A5C8F720E3D"
+           Scope="perMachine">
+
+    <MajorUpgrade DowngradeErrorMessage="Eine neuere Version von HackIT Sentry Agent ist bereits installiert." />
+
+    <!-- Properties passed via command line: msiexec /i Setup.msi SERVERURL="..." DEPLOYKEY="..." -->
+    <Property Id="SERVERURL" Value="" />
+    <Property Id="DEPLOYKEY" Value="" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="HackITSentry">
+        <Directory Id="AGENTFOLDER" Name="Agent">
+
+          <!-- Agent binary + Windows service registration -->
+          <Component Id="AgentExe" Guid="*">
+            <File Id="AgentExeFile"
+                  Source="files/HackITSentry.Agent.exe"
+                  KeyPath="yes" />
+
+            <ServiceInstall Id="AgentService"
+                Name="HackITSentryAgent"
+                DisplayName="HackIT Sentry Agent"
+                Description="HackIT Sentry Device Management Agent"
+                Type="ownProcess"
+                Start="auto"
+                ErrorControl="normal"
+                Interactive="no" />
+
+            <ServiceControl Id="AgentServiceControl"
+                Name="HackITSentryAgent"
+                Start="install"
+                Stop="both"
+                Remove="uninstall"
+                Wait="yes" />
+
+            <util:ServiceConfig
+                ServiceName="HackITSentryAgent"
+                FirstFailureActionType="restart"
+                SecondFailureActionType="restart"
+                ThirdFailureActionType="restart"
+                RestartServiceDelayInSeconds="5"
+                ResetPeriodInDays="1" />
+          </Component>
+
+          <!-- Default appsettings.json (ServerUrl is overridden by registry at runtime) -->
+          <Component Id="AppSettings" Guid="*">
+            <File Id="AppSettingsFile"
+                  Source="files/appsettings.json"
+                  KeyPath="yes" />
+          </Component>
+
+        </Directory>
+
+        <!-- Registry: server URL and deploy key (read by agent on startup) -->
+        <Component Id="RegistryConfig" Guid="*">
+          <RegistryKey Root="HKLM" Key="SOFTWARE\HackIT Sentry">
+            <RegistryValue Id="RegServerUrl"
+                Name="ServerUrl"
+                Value="[SERVERURL]"
+                Type="string"
+                KeyPath="yes" />
+            <RegistryValue Id="RegDeployKey"
+                Name="DeployKey"
+                Value="[DEPLOYKEY]"
+                Type="string" />
+          </RegistryKey>
+        </Component>
+
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="ProductFeature" Level="1">
+      <ComponentRef Id="AgentExe" />
+      <ComponentRef Id="AppSettings" />
+      <ComponentRef Id="RegistryConfig" />
+    </Feature>
+
+  </Package>
+</Wix>

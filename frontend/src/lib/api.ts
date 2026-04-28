@@ -307,6 +307,15 @@ export interface InstallToken {
   expired: boolean;
 }
 
+export interface DeployKey {
+  id: string;
+  key: string;
+  name: string;
+  createdByUsername: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+}
+
 export interface Customer {
   id: string;
   name: string;
@@ -455,6 +464,13 @@ export const installTokens = {
       method: "POST",
       body: JSON.stringify({ email }),
     }),
+};
+
+export const deployKeys = {
+  list: () => request<DeployKey[]>("/api/deploy-keys"),
+  create: (name: string) =>
+    request<DeployKey>("/api/deploy-keys", { method: "POST", body: JSON.stringify({ name }) }),
+  delete: (id: string) => request(`/api/deploy-keys/${id}`, { method: "DELETE" }),
 };
 
 export interface NotificationDefaults {

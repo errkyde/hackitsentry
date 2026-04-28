@@ -26,6 +26,7 @@ public class AppDbContext : DbContext
     public DbSet<DeviceNotificationOverride> DeviceNotificationOverrides { get; set; }
     public DbSet<CustomFieldDefinition> CustomFieldDefinitions { get; set; }
     public DbSet<CustomFieldValue> CustomFieldValues { get; set; }
+    public DbSet<DeployKey> DeployKeys { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -122,6 +123,10 @@ public class AppDbContext : DbContext
 
         modelBuilder.Entity<CustomFieldValue>()
             .HasIndex(v => new { v.DefinitionId, v.DeviceId })
+            .IsUnique();
+
+        modelBuilder.Entity<DeployKey>()
+            .HasIndex(k => k.Key)
             .IsUnique();
     }
 }

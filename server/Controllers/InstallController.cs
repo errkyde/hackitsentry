@@ -213,6 +213,100 @@ public class InstallController : ControllerBase
         return NoContent();
     }
 
+    // ── Deploy Keys ───────────────────────────────────────────────────────
+
+    [HttpGet("/install/deploy/download")]
+    public async Task<IActionResult> DeployDownload()
+    {
+        var headerKey = Request.Headers["X-Deploy-Key"].FirstOrDefault();
+        if (string.IsNullOrEmpty(headerKey))
+            return Unauthorized(new { message = "X-Deploy-Key header fehlt." });
+
+        var deployKey = await _db.DeployKeys.FirstOrDefaultAsync(k => k.Key == headerKey);
+        if (deployKey == null)
+            return Unauthorized(new { message = "Ungültiger Deploy-Key." });
+
+        deployKey.LastUsedAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync();
+
+        await _audit.LogAsync("DEPLOY_KEY_DOWNLOAD", "DeployKey", deployKey.Id.ToString(),
+            $"Deploy-Key \"{deployKey.Name}\" verwendet");
+
+        // MSI preferred: served as-is, properties are passed via msiexec at install time
+        if (_installer.IsMsiAvailable)
+        {
+            Response.ContentLength = _installer.MsiFileSize;
+            return File(System.IO.File.OpenRead(_installer.MsiPath),
+                "application/octet-stream", "HackITSentry-Setup.msi");
+        }
+
+        // Fallback: patched EXE (for deployments without MSI)
+        if (!_installer.IsAvailable)
+            return StatusCode(503, "Kein Installer verfügbar.");
+
+        var token = Guid.NewGuid().ToString("N")[..16];
+        var installToken = new InstallToken
+        {
+            Token = token,
+            CreatedByUsername = $"deploy:{deployKey.Name}",
+            ExpiresAt = DateTime.UtcNow.AddHours(72),
+        };
+        _db.InstallTokens.Add(installToken);
+        await _db.SaveChangesAsync();
+
+        var outpostUrl = !string.IsNullOrEmpty(_runtimeSettings.AgentServerUrl)
+            ? _runtimeSettings.AgentServerUrl
+            : (_config["OutpostPublicUrl"]?.TrimEnd('/') ?? $"{Request.Scheme}://{Request.Host}");
+
+        Response.ContentLength = _installer.FileSize;
+        var stream = _installer.CreatePatchedStream(outpostUrl, token);
+        return File(stream, "application/octet-stream", "HackITSentry-Setup.exe");
+    }
+
+    [HttpGet("/api/deploy-keys")]
+    [Authorize]
+    public async Task<IActionResult> ListDeployKeys()
+    {
+        var keys = await _db.DeployKeys
+            .OrderByDescending(k => k.CreatedAt)
+            .Select(k => new { k.Id, k.Name, k.CreatedByUsername, k.CreatedAt, k.LastUsedAt })
+            .ToListAsync();
+        return Ok(keys);
+    }
+
+    [HttpPost("/api/deploy-keys")]
+    [Authorize]
+    public async Task<IActionResult> CreateDeployKey([FromBody] CreateDeployKeyRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.Name))
+            return BadRequest(new { message = "Name darf nicht leer sein." });
+
+        var username = User.FindFirstValue(ClaimTypes.Name) ?? "Unknown";
+        var key = Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N")[..8];
+
+        var deployKey = new DeployKey
+        {
+            Key = key,
+            Name = req.Name.Trim(),
+            CreatedByUsername = username,
+        };
+        _db.DeployKeys.Add(deployKey);
+        await _db.SaveChangesAsync();
+
+        return Ok(new { deployKey.Id, deployKey.Key, deployKey.Name, deployKey.CreatedByUsername, deployKey.CreatedAt, deployKey.LastUsedAt });
+    }
+
+    [HttpDelete("/api/deploy-keys/{id}")]
+    [Authorize]
+    public async Task<IActionResult> DeleteDeployKey(Guid id)
+    {
+        var key = await _db.DeployKeys.FindAsync(id);
+        if (key == null) return NotFound();
+        _db.DeployKeys.Remove(key);
+        await _db.SaveChangesAsync();
+        return NoContent();
+    }
+
     // ── HTML helpers ──────────────────────────────────────────────────────
 
     private static string HtmlStatus(string title, string message, string icon) => $$"""
@@ -287,3 +381,4 @@ public class InstallController : ControllerBase
 
 public record CreateTokenRequest(int ExpiryHours);
 public record SendEmailRequest(string Email);
+public record CreateDeployKeyRequest(string Name);

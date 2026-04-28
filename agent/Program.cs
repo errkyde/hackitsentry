@@ -8,7 +8,9 @@ builder.Services.Configure<AgentConfig>(builder.Configuration.GetSection("Sentry
 builder.Services.AddHttpClient("SentryServer", (sp, client) =>
 {
     var config = sp.GetRequiredService<IConfiguration>();
-    var serverUrl = SecureStore.LoadServerUrl() ?? config["SentryAgent:ServerUrl"]!;
+    var serverUrl = SecureStore.LoadServerUrl()
+        ?? RegistryConfig.GetServerUrl()
+        ?? config["SentryAgent:ServerUrl"]!;
     client.BaseAddress = new Uri(serverUrl.TrimEnd('/') + "/");
     client.Timeout = TimeSpan.FromSeconds(30);
 });
@@ -17,7 +19,9 @@ builder.Services.AddHttpClient("SentryServer", (sp, client) =>
 builder.Services.AddHttpClient("SentryServerLongPoll", (sp, client) =>
 {
     var config = sp.GetRequiredService<IConfiguration>();
-    var serverUrl = SecureStore.LoadServerUrl() ?? config["SentryAgent:ServerUrl"]!;
+    var serverUrl = SecureStore.LoadServerUrl()
+        ?? RegistryConfig.GetServerUrl()
+        ?? config["SentryAgent:ServerUrl"]!;
     client.BaseAddress = new Uri(serverUrl.TrimEnd('/') + "/");
     client.Timeout = TimeSpan.FromSeconds(35);
 });

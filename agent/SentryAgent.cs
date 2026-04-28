@@ -56,6 +56,11 @@ public class SentryAgent : BackgroundService
 
         if (string.IsNullOrEmpty(apiKey))
         {
+            // For MSI/deploy-key deployments: clear stale state so each Sysprep-deployed
+            // machine registers fresh (DPAPI reset invalidates stored keys anyway).
+            if (!string.IsNullOrEmpty(RegistryConfig.GetDeployKey()))
+                DeleteStateFile();
+
             apiKey = await RegisterAndWaitForApproval(stoppingToken);
             if (string.IsNullOrEmpty(apiKey))
             {
@@ -140,6 +145,7 @@ public class SentryAgent : BackgroundService
 
             _logger.LogInformation("Sending registration request for {Hostname}...", sysInfo.Hostname);
 
+            var deployKey = RegistryConfig.GetDeployKey();
             var response = await _http.RegisterAsync(new
             {
                 registrationToken = token,
@@ -147,7 +153,7 @@ public class SentryAgent : BackgroundService
                 windowsVersion = sysInfo.WindowsVersion,
                 cpuModel = sysInfo.CpuModel,
                 ramTotalGB = sysInfo.RamTotalGB,
-                installToken = _config.CurrentValue.InstallToken
+                installToken = deployKey ?? _config.CurrentValue.InstallToken
             });
 
             if (response == null)
@@ -184,7 +190,7 @@ public class SentryAgent : BackgroundService
                 if (status.Status == "Rejected")
                 {
                     _logger.LogWarning("Registration was rejected by admin. Uninstalling agent...");
-                    _ = Task.Run(() => UninstallSelf());
+                    _ = Task.Run(() => UninstallSelf(notifyServer: false));
                     return null;
                 }
 
@@ -475,18 +481,21 @@ public class SentryAgent : BackgroundService
         }
     }
 
-    private async void UninstallSelf()
+    private async void UninstallSelf(bool notifyServer = true)
     {
         try
         {
             _logger.LogInformation("Uninstalling HackIT Sentry Agent...");
 
-            // Notify server to delete device record
-            await _http.UninstallAsync();
-            SecureStore.Delete();
+            if (notifyServer)
+            {
+                await _http.UninstallAsync();
+                // Small delay so the command result can be reported first
+                await Task.Delay(3000);
+            }
 
-            // Small delay so the command result can be reported first
-            await Task.Delay(3000);
+            SecureStore.Delete();
+            DeleteStateFile();
 
             var installDir = AppContext.BaseDirectory;
             var dataDir = Path.Combine(

@@ -12,6 +12,10 @@ public sealed class InstallerService
     public bool    IsAvailable { get; private set; }
     public long    FileSize    { get; private set; }
 
+    public string  MsiPath       { get; }
+    public bool    IsMsiAvailable { get; private set; }
+    public long    MsiFileSize    { get; private set; }
+
     public long ServerUrlValueOffset  { get; private set; }
     public int  ServerUrlSlotBytes    { get; private set; }
     public long InstallTokenValueOffset { get; private set; }
@@ -23,6 +27,14 @@ public sealed class InstallerService
     {
         _logger = logger;
         ExePath = Path.Combine(AppContext.BaseDirectory, "installer", "HackITSentry-Setup.exe");
+        MsiPath = Path.Combine(AppContext.BaseDirectory, "installer", "HackITSentry-Setup.msi");
+
+        if (File.Exists(MsiPath))
+        {
+            MsiFileSize = new FileInfo(MsiPath).Length;
+            IsMsiAvailable = true;
+            _logger.LogInformation("MSI installer ready at {Path}", MsiPath);
+        }
 
         if (!File.Exists(ExePath))
         {

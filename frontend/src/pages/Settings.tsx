@@ -7,11 +7,11 @@ import {
 } from "lucide-react";
 import {
   auth, users, settings, software, audit, agentVersions, devices as devicesApi,
-  notifications, customFields,
+  notifications, customFields, deployKeys as deployKeysApi,
   type AppUser, type EmailSettingsInput, type BlacklistEntry,
   type AuditLogEntry, type AgentVersion, type RustDeskSettings,
   type NotificationDefaults, type DeviceNotificationOverride,
-  type CustomFieldDefinition,
+  type CustomFieldDefinition, type DeployKey,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,7 +22,7 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
 type Section =
-  | "allgemein" | "agent"
+  | "allgemein" | "agent" | "deploykeys"
   | "email" | "benachrichtigungen"
   | "felder" | "software"
   | "fernzugriff"
@@ -35,6 +35,7 @@ const adminNavGroups: { label: string | null; items: { id: Section; label: strin
     items: [
       { id: "allgemein", label: "Allgemein", icon: Settings2 },
       { id: "agent", label: "Agent", icon: Cpu },
+      { id: "deploykeys", label: "Deploy-Keys", icon: KeyRound },
     ],
   },
   {
@@ -176,6 +177,13 @@ export function Settings() {
   const [newFieldName, setNewFieldName] = useState("");
   const [fieldLoading, setFieldLoading] = useState(false);
 
+  // --- Deploy Keys ---
+  const [dkList, setDkList] = useState<DeployKey[]>([]);
+  const [dkName, setDkName] = useState("");
+  const [dkLoading, setDkLoading] = useState(false);
+  const [dkCopied, setDkCopied] = useState<string | null>(null);
+  const [dkNewKey, setDkNewKey] = useState<DeployKey | null>(null);
+
   // --- Agent Versions ---
   const [agentVers, setAgentVers] = useState<AgentVersion[]>([]);
   const [versionDialog, setVersionDialog] = useState(false);
@@ -207,6 +215,7 @@ export function Settings() {
     settings.getRustDesk().then(setRustDesk).catch(() => {});
     settings.getAgentSettings().then(s => setAutoUpdate(s.autoUpdate)).catch(() => {});
     customFields.getDefinitions().then(setFieldDefs).catch(() => {});
+    deployKeysApi.list().then(setDkList).catch(() => {});
     notifications.getDefaults().then(setNotifyDefaults).catch(() => {});
     notifications.getDeviceOverrides().then(setNotifyOverrides).catch(() => {});
     devicesApi.list().then(list => setAllDevices(list.map(d => ({ id: d.id, hostname: d.hostname, description: d.description })))).catch(() => {});
@@ -419,6 +428,32 @@ export function Settings() {
     }
   };
 
+  const handleCreateDeployKey = async () => {
+    if (!dkName.trim()) return;
+    setDkLoading(true);
+    try {
+      const dk = await deployKeysApi.create(dkName.trim());
+      setDkList(prev => [dk, ...prev]);
+      setDkNewKey(dk);
+      setDkName("");
+    } catch (err: any) {
+      toast({ title: "Fehler", description: err.message || "Deploy-Key konnte nicht erstellt werden.", variant: "warning" });
+    }
+    setDkLoading(false);
+  };
+
+  const handleDeleteDeployKey = async (id: string) => {
+    await deployKeysApi.delete(id).catch(() => {});
+    setDkList(prev => prev.filter(k => k.id !== id));
+    if (dkNewKey?.id === id) setDkNewKey(null);
+  };
+
+  const handleCopyDk = (text: string, id: string) => {
+    navigator.clipboard.writeText(text);
+    setDkCopied(id);
+    setTimeout(() => setDkCopied(null), 2000);
+  };
+
   const handleAddField = async () => {
     if (!newFieldName.trim()) return;
     setFieldLoading(true);
@@ -602,6 +637,112 @@ export function Settings() {
                     <Button onClick={handleSaveAlerts}>Speichern</Button>
                   </div>
                   <SaveFeedback msg={alertSaveMsg} />
+                </CardContent>
+              </Card>
+            </>
+          )}
+
+          {/* ── Deploy-Keys ───────────────────────────────────────────── */}
+          {activeSection === "deploykeys" && isAdmin && (
+            <>
+              <h1 className="text-lg font-semibold">Deploy-Keys</h1>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <KeyRound className="h-4 w-4" />
+                    Permanente Installer-Links
+                  </CardTitle>
+                  <CardDescription>
+                    Deploy-Keys ermöglichen einen dauerhaften Download-Endpunkt für Custom Images, MDM und SCCM-Deployments.
+                    Der Key wird im HTTP-Header übergeben – die URL allein reicht nicht aus.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex gap-2">
+                    <Input
+                      placeholder="Name, z.B. SCCM-Production"
+                      value={dkName}
+                      onChange={e => setDkName(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && handleCreateDeployKey()}
+                      className="max-w-xs"
+                    />
+                    <Button onClick={handleCreateDeployKey} disabled={dkLoading || !dkName.trim()}>
+                      <Plus className="h-3.5 w-3.5 mr-1.5" />
+                      Key erstellen
+                    </Button>
+                  </div>
+
+                  {dkNewKey && (
+                    <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 p-4 space-y-2">
+                      <p className="text-sm font-medium text-emerald-600 flex items-center gap-1.5">
+                        <CheckCircle2 className="h-4 w-4" />
+                        Deploy-Key erstellt — nur jetzt sichtbar
+                      </p>
+                      <code className="block text-xs font-mono break-all bg-muted rounded px-2 py-1.5">
+                        {dkNewKey.key}
+                      </code>
+                      <Button size="sm" variant="outline" onClick={() => handleCopyDk(dkNewKey.key, dkNewKey.id)}>
+                        {dkCopied === dkNewKey.id ? <CheckCircle2 className="h-3.5 w-3.5 mr-1.5 text-green-600" /> : <Download className="h-3.5 w-3.5 mr-1.5" />}
+                        Key kopieren
+                      </Button>
+                    </div>
+                  )}
+
+                  {dkList.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">Noch keine Deploy-Keys vorhanden.</p>
+                  ) : (
+                    <div className="rounded-md border border-border overflow-hidden">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b border-border bg-muted/30">
+                            <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Name</th>
+                            <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Erstellt von</th>
+                            <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Zuletzt verwendet</th>
+                            <th className="w-12"></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {dkList.map(k => (
+                            <tr key={k.id} className="border-t border-border/50">
+                              <td className="px-4 py-2.5 font-medium">{k.name}</td>
+                              <td className="px-4 py-2.5 text-muted-foreground text-xs">{k.createdByUsername}</td>
+                              <td className="px-4 py-2.5 text-muted-foreground text-xs">
+                                {k.lastUsedAt
+                                  ? new Date(k.lastUsedAt).toLocaleString("de-DE", { dateStyle: "short", timeStyle: "short" })
+                                  : "—"}
+                              </td>
+                              <td className="px-4 py-2.5">
+                                <Button variant="ghost" size="icon" className="h-7 w-7 hover:text-destructive" onClick={() => handleDeleteDeployKey(k.id)}>
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </Button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  <div className="rounded-md border border-border bg-muted/20 p-4 space-y-3">
+                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">MSI — Custom Image / SCCM / MDT</p>
+                    <p className="text-xs text-muted-foreground">MSI herunterladen und mit <code className="bg-muted px-1 rounded">msiexec</code> installieren. Kein Ablaufdatum.</p>
+                    <pre className="text-xs font-mono overflow-x-auto whitespace-pre bg-background border rounded px-3 py-2">{`# 1. MSI herunterladen (einmalig, z.B. ins Image-Share)
+Invoke-WebRequest -Uri "${agentServerUrl || "https://api.example.com"}/install/deploy/download" \`
+  -Headers @{ "X-Deploy-Key" = "DEIN_KEY_HIER" } \`
+  -OutFile "HackITSentry-Setup.msi"
+
+# 2. Im Image / Deployment installieren
+msiexec /i "HackITSentry-Setup.msi" \`
+  SERVERURL="${agentServerUrl || "https://api.example.com"}" \`
+  DEPLOYKEY="DEIN_KEY_HIER" \`
+  /quiet /norestart`}</pre>
+                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mt-1">PowerShell-Fallback (EXE)</p>
+                    <pre className="text-xs font-mono overflow-x-auto whitespace-pre bg-background border rounded px-3 py-2">{`Invoke-WebRequest -Uri "${agentServerUrl || "https://api.example.com"}/install/deploy/download" \`
+  -Headers @{ "X-Deploy-Key" = "DEIN_KEY_HIER" } \`
+  -OutFile "$env:TEMP\\HackITSentry-Setup.exe"
+Start-Process "$env:TEMP\\HackITSentry-Setup.exe" -Verb RunAs -Wait`}</pre>
+                  </div>
                 </CardContent>
               </Card>
             </>

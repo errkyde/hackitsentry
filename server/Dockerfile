@@ -36,11 +36,23 @@ RUN dotnet publish installer/Installer.csproj \
     -c Release -r win-x64 --self-contained true \
     -p:PublishSingleFile=true -o /installer-publish
 
+# ── Build MSI installer (WiX 4, cross-platform Linux build) ──────────────
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS msi-build
+RUN dotnet tool install --global wix --version 4.0.5
+ENV PATH="$PATH:/root/.dotnet/tools"
+WORKDIR /msi
+COPY installer-msi/ ./
+COPY --from=agent-build /agent-publish/HackITSentry.Agent.exe ./files/HackITSentry.Agent.exe
+RUN wix extension add WixToolset.Util.wixext/4.0.5 && \
+    wix build Package.wxs -arch x64 -ext WixToolset.Util.wixext \
+        -o /msi-publish/HackITSentry-Setup.msi
+
 # ── Final image ───────────────────────────────────────────────────────────
 FROM base AS final
 WORKDIR /app
 COPY --from=build /app/publish .
 COPY --from=installer-build /installer-publish/HackITSentry-Setup.exe /app/installer/HackITSentry-Setup.exe
+COPY --from=msi-build /msi-publish/HackITSentry-Setup.msi /app/installer/HackITSentry-Setup.msi
 COPY --from=agent-build /agent-publish/HackITSentry.Agent.exe /app/agent/HackITSentry.Agent.exe
 COPY --from=agent-build /agent-publish/agent-version.txt /app/agent/agent-version.txt
 ENTRYPOINT ["dotnet", "HackITSentry.Server.dll"]
