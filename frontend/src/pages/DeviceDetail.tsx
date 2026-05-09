@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
   ArrowLeft, Cpu, Globe, HardDrive, Package, Key, Save, RefreshCw,
-  Trash2, Activity, StickyNote, Terminal, Plus, Send, CheckCircle2, Monitor
+  Trash2, Activity, StickyNote, Terminal, Plus, Send, CheckCircle2, Monitor, BellOff, WifiOff
 } from "lucide-react";
 import {
   devices, customers, groups, agentVersions, customFields,
@@ -22,6 +22,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
+import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import { toast } from "@/lib/useToast";
 
@@ -76,6 +77,7 @@ export function DeviceDetail() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [licenseLoading, setLicenseLoading] = useState(false);
+  const [ackingDiskAlert, setAckingDiskAlert] = useState(false);
   const [saving, setSaving] = useState(false);
   const [softwareSearch, setSoftwareSearch] = useState("");
   const [uninstallDialog, setUninstallDialog] = useState(false);
@@ -266,48 +268,49 @@ export function DeviceDetail() {
   );
 
   return (
-    <div className="p-6 space-y-5 max-w-5xl">
+    <div className="p-4 sm:p-6 space-y-4 sm:space-y-5 max-w-5xl">
       {/* Header */}
-      <div className="flex items-start gap-4">
-        <Button variant="ghost" size="icon" onClick={() => navigate("/devices")} className="mt-0.5">
+      <div className="flex items-start gap-3">
+        <Button variant="ghost" size="icon" onClick={() => navigate("/devices")} className="mt-0.5 shrink-0">
           <ArrowLeft className="h-4 w-4" />
         </Button>
-        <div className="flex-1">
-          <div className="flex items-center gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
             <h1 className="text-xl font-semibold">{device.hostname}</h1>
             <StatusDot online={device.isOnline} />
           </div>
           {device.description && (
             <p className="text-sm text-muted-foreground mt-0.5">{device.description}</p>
           )}
-        </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={() => loadData(true)} disabled={refreshing}>
-            <RefreshCw className={cn("h-4 w-4 mr-1.5", refreshing && "animate-spin")} />
-            Aktualisieren
-          </Button>
-          {rustDeskId ? (
-            <a href={`rustdesk://connection/new/${rustDeskId}`} target="_blank" rel="noreferrer">
-              <Button variant="outline" size="sm">
-                <Monitor className="h-4 w-4 mr-1.5" />
-                Via RustDesk verbinden
-              </Button>
-            </a>
-          ) : (
-            <Button variant="outline" size="sm" disabled title="RustDesk nicht konfiguriert">
-              <Monitor className="h-4 w-4 mr-1.5" />
-              Via RustDesk verbinden
+          {/* Action buttons — below title on mobile, inline on desktop */}
+          <div className="flex items-center gap-2 mt-2 flex-wrap">
+            <Button variant="outline" size="sm" onClick={() => loadData(true)} disabled={refreshing}>
+              <RefreshCw className={cn("h-4 w-4 mr-1.5", refreshing && "animate-spin")} />
+              Aktualisieren
             </Button>
-          )}
-          <Button
-            variant="ghost"
-            size="sm"
-            className="text-muted-foreground hover:text-destructive"
-            onClick={() => setUninstallDialog(true)}
-          >
-            <Trash2 className="h-4 w-4 mr-1.5" />
-            Deinstallieren
-          </Button>
+            {rustDeskId ? (
+              <a href={`rustdesk://connection/new/${rustDeskId}`} target="_blank" rel="noreferrer">
+                <Button variant="outline" size="sm">
+                  <Monitor className="h-4 w-4 mr-1.5" />
+                  RustDesk
+                </Button>
+              </a>
+            ) : (
+              <Button variant="outline" size="sm" disabled title="RustDesk nicht konfiguriert">
+                <Monitor className="h-4 w-4 mr-1.5" />
+                RustDesk
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground hover:text-destructive"
+              onClick={() => setUninstallDialog(true)}
+            >
+              <Trash2 className="h-4 w-4 mr-1.5" />
+              Deinstallieren
+            </Button>
+          </div>
         </div>
       </div>
 
@@ -405,26 +408,53 @@ export function DeviceDetail() {
 
       {/* Tabs */}
       <Tabs defaultValue="hardware">
-        <TabsList className="w-full justify-start flex-wrap">
-          <TabsTrigger value="hardware"><Cpu className="h-3.5 w-3.5 mr-1.5" />Hardware</TabsTrigger>
-          <TabsTrigger value="network"><Globe className="h-3.5 w-3.5 mr-1.5" />Netzwerk</TabsTrigger>
-          <TabsTrigger value="disks"><HardDrive className="h-3.5 w-3.5 mr-1.5" />Festplatten</TabsTrigger>
-          <TabsTrigger value="software"><Package className="h-3.5 w-3.5 mr-1.5" />Software ({software.length})</TabsTrigger>
-          <TabsTrigger value="licenses"><Key className="h-3.5 w-3.5 mr-1.5" />Lizenzen</TabsTrigger>
-          <TabsTrigger value="notes">
-            <StickyNote className="h-3.5 w-3.5 mr-1.5" />
-            Notizen {notes.length > 0 && <Badge variant="secondary" className="ml-1 h-4 px-1 text-xs">{notes.length}</Badge>}
-          </TabsTrigger>
-          <TabsTrigger value="commands">
-            <Terminal className="h-3.5 w-3.5 mr-1.5" />
-            Befehle {commands.filter(c => c.status === "Pending" || c.status === "Sent").length > 0 && (
-              <Badge variant="secondary" className="ml-1 h-4 px-1 text-xs">
-                {commands.filter(c => c.status === "Pending" || c.status === "Sent").length}
-              </Badge>
-            )}
-          </TabsTrigger>
-          <TabsTrigger value="history"><Activity className="h-3.5 w-3.5 mr-1.5" />Verlauf</TabsTrigger>
-        </TabsList>
+        <div className="w-full overflow-x-auto">
+          <TabsList className="w-max min-w-full justify-start">
+            <TabsTrigger value="hardware" title="Hardware">
+              <Cpu className="h-3.5 w-3.5 sm:mr-1.5 shrink-0" />
+              <span className="hidden sm:inline">Hardware</span>
+            </TabsTrigger>
+            <TabsTrigger value="network" title="Netzwerk">
+              <Globe className="h-3.5 w-3.5 sm:mr-1.5 shrink-0" />
+              <span className="hidden sm:inline">Netzwerk</span>
+            </TabsTrigger>
+            <TabsTrigger value="disks" title="Festplatten">
+              <HardDrive className="h-3.5 w-3.5 sm:mr-1.5 shrink-0" />
+              <span className="hidden sm:inline">Festplatten</span>
+            </TabsTrigger>
+            <TabsTrigger value="software" title="Software">
+              <Package className="h-3.5 w-3.5 sm:mr-1.5 shrink-0" />
+              <span className="hidden sm:inline">Software ({software.length})</span>
+              <span className="sm:hidden text-xs ml-0.5 opacity-60">{software.length > 0 ? software.length : ""}</span>
+            </TabsTrigger>
+            <TabsTrigger value="licenses" title="Lizenzen">
+              <Key className="h-3.5 w-3.5 sm:mr-1.5 shrink-0" />
+              <span className="hidden sm:inline">Lizenzen</span>
+            </TabsTrigger>
+            <TabsTrigger value="notes" title="Notizen">
+              <StickyNote className="h-3.5 w-3.5 sm:mr-1.5 shrink-0" />
+              <span className="hidden sm:inline">Notizen</span>
+              {notes.length > 0 && <Badge variant="secondary" className="ml-1 h-4 px-1 text-xs">{notes.length}</Badge>}
+            </TabsTrigger>
+            <TabsTrigger value="commands" title="Befehle">
+              <Terminal className="h-3.5 w-3.5 sm:mr-1.5 shrink-0" />
+              <span className="hidden sm:inline">Befehle</span>
+              {commands.filter(c => c.status === "Pending" || c.status === "Sent").length > 0 && (
+                <Badge variant="secondary" className="ml-1 h-4 px-1 text-xs">
+                  {commands.filter(c => c.status === "Pending" || c.status === "Sent").length}
+                </Badge>
+              )}
+            </TabsTrigger>
+            <TabsTrigger value="downtimes" title="Ausfallzeiten">
+              <WifiOff className="h-3.5 w-3.5 sm:mr-1.5 shrink-0" />
+              <span className="hidden sm:inline">Ausfälle</span>
+            </TabsTrigger>
+            <TabsTrigger value="history" title="Verlauf">
+              <Activity className="h-3.5 w-3.5 sm:mr-1.5 shrink-0" />
+              <span className="hidden sm:inline">Verlauf</span>
+            </TabsTrigger>
+          </TabsList>
+        </div>
 
         {/* Hardware */}
         <TabsContent value="hardware">
@@ -500,6 +530,49 @@ export function DeviceDetail() {
 
         {/* Disks */}
         <TabsContent value="disks">
+          {device.lastDiskAlertAt && (
+            <div className={cn(
+              "mb-3 flex items-center justify-between gap-3 rounded-lg border px-4 py-3 text-sm",
+              device.diskAlertAcknowledgedUsedPct != null
+                ? "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+                : "border-destructive/30 bg-destructive/10 text-destructive"
+            )}>
+              <div className="flex items-center gap-2">
+                <HardDrive className="h-4 w-4 shrink-0" />
+                {device.diskAlertAcknowledgedUsedPct != null ? (
+                  <span>
+                    Festplattenwarnung bestätigt bei <strong>{device.diskAlertAcknowledgedUsedPct.toFixed(0)}% belegt</strong> — nächster Alert bei {Math.min(device.diskAlertAcknowledgedUsedPct + 10, 100).toFixed(0)}%
+                  </span>
+                ) : (
+                  <span>Festplattenwarnung aktiv — bitte überprüfen</span>
+                )}
+              </div>
+              {device.diskAlertAcknowledgedUsedPct == null && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={ackingDiskAlert}
+                  onClick={async () => {
+                    setAckingDiskAlert(true);
+                    try {
+                      await devices.acknowledgeDiskAlert(device.id);
+                      const updated = await devices.get(device.id);
+                      setDevice(updated);
+                      toast({ title: "Festplattenwarnung bestätigt" });
+                    } catch {
+                      toast({ title: "Fehler beim Bestätigen", variant: "warning" });
+                    } finally {
+                      setAckingDiskAlert(false);
+                    }
+                  }}
+                  className="shrink-0"
+                >
+                  <BellOff className="h-3.5 w-3.5 mr-1.5" />
+                  Bestätigen
+                </Button>
+              )}
+            </div>
+          )}
           <Card>
             <CardContent className="pt-6">
               {device.recentCheckins.length === 0 ? (
@@ -835,8 +908,22 @@ export function DeviceDetail() {
                           <td className="px-3 py-2.5 text-xs text-muted-foreground">
                             {new Date(cmd.createdAt).toLocaleString("de-DE")}
                           </td>
-                          <td className="px-3 py-2.5 text-xs text-muted-foreground max-w-[200px] truncate">
-                            {cmd.result || (cmd.status === "Executed" ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" /> : "—")}
+                          <td className="px-3 py-2.5 text-xs text-muted-foreground max-w-[200px]">
+                            {cmd.result
+                              ? (
+                                <Popover>
+                                  <PopoverTrigger asChild>
+                                    <button className="truncate block w-full text-left hover:text-foreground underline decoration-dotted underline-offset-2 cursor-pointer" title="Klicken für vollständigen Text">
+                                      {cmd.result}
+                                    </button>
+                                  </PopoverTrigger>
+                                  <PopoverContent align="end" className="w-96 max-h-64 overflow-y-auto">
+                                    <p className="text-xs whitespace-pre-wrap break-words">{cmd.result}</p>
+                                  </PopoverContent>
+                                </Popover>
+                              )
+                              : (cmd.status === "Executed" ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" /> : "—")
+                            }
                           </td>
                         </tr>
                       ))}
@@ -848,18 +935,15 @@ export function DeviceDetail() {
           </Card>
         </TabsContent>
 
-        {/* History */}
-        <TabsContent value="history">
+        {/* Downtimes */}
+        <TabsContent value="downtimes">
           <div className="space-y-4">
-            {/* Controls */}
             <div className="flex items-center justify-between">
               <p className="text-sm text-muted-foreground">
-                {history ? `${history.checkins.length} Check-ins · ${history.downtimes.length} Ausfälle` : "Lade…"}
+                {history ? `${history.downtimes.length} Ausfall${history.downtimes.length !== 1 ? "zeiten" : ""}` : "Lade…"}
               </p>
               <Select value={String(historyDays)} onValueChange={v => setHistoryDays(Number(v))}>
-                <SelectTrigger className="w-36">
-                  <SelectValue />
-                </SelectTrigger>
+                <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="7">Letzte 7 Tage</SelectItem>
                   <SelectItem value="14">Letzte 14 Tage</SelectItem>
@@ -868,13 +952,8 @@ export function DeviceDetail() {
                 </SelectContent>
               </Select>
             </div>
-
-            {/* Downtime list */}
             <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-sm">Ausfallzeiten</CardTitle>
-              </CardHeader>
-              <CardContent className="pt-0">
+              <CardContent className="pt-6">
                 {!history || history.downtimes.length === 0 ? (
                   <p className="text-sm text-muted-foreground">
                     {history ? "Keine Ausfälle im gewählten Zeitraum." : "Laden…"}
@@ -899,21 +978,15 @@ export function DeviceDetail() {
                             : `${mins}m`;
                           return (
                             <tr key={i} className="border-t border-border/50">
-                              <td className="px-3 py-2 text-xs">
-                                {new Date(d.from).toLocaleString("de-DE")}
-                              </td>
-                              <td className="px-3 py-2 text-xs">
-                                {new Date(d.to).toLocaleString("de-DE")}
-                              </td>
+                              <td className="px-3 py-2 text-xs">{new Date(d.from).toLocaleString("de-DE")}</td>
+                              <td className="px-3 py-2 text-xs">{new Date(d.to).toLocaleString("de-DE")}</td>
                               <td className="px-3 py-2">
                                 <span className={cn(
                                   "text-xs font-medium px-2 py-0.5 rounded-full",
                                   mins >= 1440 ? "bg-rose-500/15 text-rose-600 dark:text-rose-400" :
                                   mins >= 120  ? "bg-amber-500/15 text-amber-600 dark:text-amber-400" :
                                                  "bg-muted text-muted-foreground"
-                                )}>
-                                  {dur}
-                                </span>
+                                )}>{dur}</span>
                               </td>
                             </tr>
                           );
@@ -924,9 +997,28 @@ export function DeviceDetail() {
                 )}
               </CardContent>
             </Card>
+          </div>
+        </TabsContent>
 
-            {/* RAM chart */}
-            {history && history.checkins.length > 0 && (
+        {/* History */}
+        <TabsContent value="history">
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-muted-foreground">
+                {history ? `${history.checkins.length} Check-ins` : "Lade…"}
+              </p>
+              <Select value={String(historyDays)} onValueChange={v => setHistoryDays(Number(v))}>
+                <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="7">Letzte 7 Tage</SelectItem>
+                  <SelectItem value="14">Letzte 14 Tage</SelectItem>
+                  <SelectItem value="30">Letzte 30 Tage</SelectItem>
+                  <SelectItem value="90">Letzte 90 Tage</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {history && history.checkins.length > 0 ? (<>
               <Card>
                 <CardHeader className="pb-3">
                   <CardTitle className="text-sm">RAM-Auslastung</CardTitle>
@@ -939,10 +1031,7 @@ export function DeviceDetail() {
                         <div
                           key={i}
                           title={`${c.ramUsedGB.toFixed(1)} / ${device.ramTotalGB} GB — ${new Date(c.checkedInAt).toLocaleString("de-DE")}`}
-                          className={cn(
-                            "flex-1 min-w-[2px] rounded-sm",
-                            pct > 90 ? "bg-destructive" : pct > 70 ? "bg-amber-500" : "bg-primary"
-                          )}
+                          className={cn("flex-1 min-w-[2px] rounded-sm", pct > 90 ? "bg-destructive" : pct > 70 ? "bg-amber-500" : "bg-primary")}
                           style={{ height: `${Math.max(4, pct)}%` }}
                         />
                       );
@@ -950,10 +1039,7 @@ export function DeviceDetail() {
                   </div>
                 </CardContent>
               </Card>
-            )}
 
-            {/* Checkin table */}
-            {history && history.checkins.length > 0 && (
               <Card>
                 <CardHeader className="pb-3">
                   <CardTitle className="text-sm">Check-in Verlauf</CardTitle>
@@ -983,6 +1069,10 @@ export function DeviceDetail() {
                   </div>
                 </CardContent>
               </Card>
+            </>) : (
+              <p className="text-sm text-muted-foreground">
+                {history ? "Keine Check-ins im gewählten Zeitraum." : "Laden…"}
+              </p>
             )}
           </div>
         </TabsContent>
