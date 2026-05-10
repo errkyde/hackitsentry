@@ -49,7 +49,8 @@ export const notifications = {
   saveDefaults: (data: NotificationDefaults) =>
     request<{ message: string }>("/api/settings/notifications", { method: "PUT", body: JSON.stringify(data) }),
   getDeviceOverrides: () => request<DeviceNotificationOverride[]>("/api/settings/notifications/devices"),
-  upsertDeviceOverride: (data: { deviceId: string; alertOnOffline: boolean | null; alertOnOnline: boolean | null; alertOnSoftwareAlert: boolean | null; alertOnDiskFull: boolean | null }) =>
+  getDeviceOverride: (deviceId: string) => request<DeviceNotificationOverrideSingle>(`/api/settings/notifications/devices/${deviceId}`),
+  upsertDeviceOverride: (data: { deviceId: string; alertOnOffline: boolean | null; alertOnOnline: boolean | null; alertOnSoftwareAlert: boolean | null; alertOnDiskFull: boolean | null; offlineAlertDelayMinutes: number | null }) =>
     request<{ message: string }>("/api/settings/notifications/devices", { method: "POST", body: JSON.stringify(data) }),
   deleteDeviceOverride: (deviceId: string) =>
     request(`/api/settings/notifications/devices/${deviceId}`, { method: "DELETE" }),
@@ -74,9 +75,18 @@ export const settings = {
   getRustDesk: () => request<RustDeskSettings>("/api/settings/rustdesk"),
   saveRustDesk: (data: RustDeskSettings) =>
     request<{ message: string }>("/api/settings/rustdesk", { method: "PUT", body: JSON.stringify(data) }),
+  forceApplyRustDesk: () =>
+    request<{ message: string; version: number }>("/api/settings/rustdesk/force-apply", { method: "POST" }),
+  clearDeviceRustDeskOverrides: () =>
+    request<{ message: string }>("/api/settings/rustdesk/device-overrides", { method: "DELETE" }),
   getAgentSettings: () => request<{ autoUpdate: boolean }>("/api/settings/agent"),
   saveAgentSettings: (autoUpdate: boolean) =>
     request<{ message: string }>("/api/settings/agent", { method: "PUT", body: JSON.stringify({ autoUpdate }) }),
+  getLdap: () => request<LdapSettings>("/api/settings/ldap"),
+  saveLdap: (data: Omit<LdapSettings, "hasBindPassword"> & { bindPassword?: string }) =>
+    request<{ message: string }>("/api/settings/ldap", { method: "PUT", body: JSON.stringify(data) }),
+  testLdap: () =>
+    request<{ message: string }>("/api/settings/ldap/test", { method: "POST" }),
 };
 
 // Custom Fields
@@ -116,13 +126,14 @@ export const auth = {
 export const devices = {
   list: (params?: Record<string, string>) => {
     const qs = params ? "?" + new URLSearchParams(params).toString() : "";
-    return request<Device[]>(`/api/devices${qs}`);
+    return request<DevicePage>(`/api/devices${qs}`);
   },
   get: (id: string) => request<DeviceDetail>(`/api/devices/${id}`),
   patch: (id: string, data: PatchDevice) =>
     request(`/api/devices/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   getSoftware: (id: string) => request<Software[]>(`/api/devices/${id}/software`),
   requestLicense: (id: string) => request(`/api/devices/${id}/request-license`, { method: "POST" }),
+  acknowledgeDiskAlert: (id: string) => request(`/api/devices/${id}/acknowledge-disk-alert`, { method: "POST" }),
   getLicense: (id: string) => request<LicenseInfo>(`/api/devices/${id}/license`),
   getPending: () => request<PendingDevice[]>("/api/devices/pending"),
   getPendingCount: () => request<{ count: number }>("/api/devices/pending/count"),
@@ -137,20 +148,24 @@ export const devices = {
     request<{ updated: number }>("/api/devices/bulk", { method: "PATCH", body: JSON.stringify(data) }),
   bulkDelete: (deviceIds: string[]) =>
     request<{ deleted: number }>("/api/devices/bulk", { method: "DELETE", body: JSON.stringify({ deviceIds }) }),
+  bulkCommand: (data: { deviceIds: string[]; commandType: string; parameters?: string; scheduledFor?: string }) =>
+    request<{ queued: number }>("/api/devices/bulk-command", { method: "POST", body: JSON.stringify(data) }),
   getNotes: (id: string) => request<DeviceNote[]>(`/api/devices/${id}/notes`),
   addNote: (id: string, content: string) =>
     request<DeviceNote>(`/api/devices/${id}/notes`, { method: "POST", body: JSON.stringify({ content }) }),
   deleteNote: (id: string, noteId: string) =>
     request(`/api/devices/${id}/notes/${noteId}`, { method: "DELETE" }),
   getCommands: (id: string) => request<DeviceCommand[]>(`/api/devices/${id}/commands`),
-  issueCommand: (id: string, commandType: string, parameters?: string) =>
-    request<{ id: string }>(`/api/devices/${id}/commands`, { method: "POST", body: JSON.stringify({ commandType, parameters }) }),
+  issueCommand: (id: string, commandType: string, parameters?: string, scheduledFor?: string) =>
+    request<{ id: string }>(`/api/devices/${id}/commands`, { method: "POST", body: JSON.stringify({ commandType, parameters, scheduledFor }) }),
   setLicenseExpiry: (id: string, expiresAt: string | null) =>
     request(`/api/devices/${id}/license/expiry`, { method: "PATCH", body: JSON.stringify({ expiresAt }) }),
   getAlertSettings: () => request<{ diskAlertThresholdPercent: number }>("/api/settings/alerts"),
   saveAlertSettings: (diskAlertThresholdPercent: number) =>
     request<{ message: string }>("/api/settings/alerts", { method: "PUT", body: JSON.stringify({ diskAlertThresholdPercent }) }),
   getHistory: (id: string, days = 30) => request<DeviceHistory>(`/api/devices/${id}/history?days=${days}`),
+  patchRustDeskOptions: (id: string, options: Record<string, string> | null) =>
+    request(`/api/devices/${id}/rustdesk-options`, { method: "PATCH", body: JSON.stringify({ options }) }),
 };
 
 // Dashboard
@@ -200,10 +215,48 @@ export const agentVersions = {
     request<{ id: string }>("/api/agent-versions", { method: "POST", body: JSON.stringify(data) }),
   setLatest: (id: string) =>
     request(`/api/agent-versions/${id}/set-latest`, { method: "PATCH" }),
+  updateChangelog: (id: string, changelog: string) =>
+    request(`/api/agent-versions/${id}/changelog`, { method: "PATCH", body: JSON.stringify({ changelog }) }),
   delete: (id: string) =>
     request(`/api/agent-versions/${id}`, { method: "DELETE" }),
-  publish: () =>
-    request<{ version: string; downloadUrl: string }>("/api/agent-versions/publish", { method: "POST" }),
+  publish: (changelog?: string) =>
+    request<{ version: string; downloadUrl: string }>("/api/agent-versions/publish", { method: "POST", body: JSON.stringify({ changelog }) }),
+  getChangelogSuggestions: () =>
+    request<{ lines: string[] }>("/api/agent-versions/changelog-suggestions"),
+};
+
+// Script Templates
+export const scriptTemplates = {
+  list: () => request<ScriptTemplate[]>("/api/script-templates"),
+  get: (id: string) => request<ScriptTemplate>(`/api/script-templates/${id}`),
+  create: (data: { name: string; description: string; script: string }) =>
+    request<{ id: string }>("/api/script-templates", { method: "POST", body: JSON.stringify(data) }),
+  update: (id: string, data: { name: string; description: string; script: string }) =>
+    request("/api/script-templates/" + id, { method: "PUT", body: JSON.stringify(data) }),
+  delete: (id: string) =>
+    request("/api/script-templates/" + id, { method: "DELETE" }),
+};
+
+// Software Packages & Deployment
+export const softwarePackages = {
+  list: () => request<SoftwarePackage[]>("/api/software-packages"),
+  create: (data: { name: string; version: string; type: string; installCmd: string; uninstallCmd?: string; description: string }) =>
+    request<{ id: string }>("/api/software-packages", { method: "POST", body: JSON.stringify(data) }),
+  update: (id: string, data: { name: string; version: string; type: string; installCmd: string; uninstallCmd?: string; description: string }) =>
+    request("/api/software-packages/" + id, { method: "PUT", body: JSON.stringify(data) }),
+  delete: (id: string) =>
+    request("/api/software-packages/" + id, { method: "DELETE" }),
+};
+
+export const deployment = {
+  deploy: (packageId: string, deviceIds: string[]) =>
+    request<{ queued: number }>("/api/deployment/deploy", { method: "POST", body: JSON.stringify({ packageId, deviceIds }) }),
+  getJobs: (params?: { deviceId?: string; packageId?: string }) => {
+    const qs = params ? "?" + new URLSearchParams(
+      Object.fromEntries(Object.entries(params).filter(([, v]) => v !== undefined) as [string, string][])
+    ).toString() : "";
+    return request<DeploymentJob[]>(`/api/deployment/jobs${qs}`);
+  },
 };
 
 // Customers
@@ -226,9 +279,22 @@ export const groups = {
     request<Group>(`/api/groups/${id}`, { method: "PUT", body: JSON.stringify(data) }),
   delete: (id: string) =>
     request(`/api/groups/${id}`, { method: "DELETE" }),
+  syncRustDesk: (id: string, options: Record<string, string> | null) =>
+    request<{ updated: number }>(`/api/groups/${id}/sync-rustdesk`, { method: "POST", body: JSON.stringify({ options }) }),
+  syncNotifications: (id: string, data: { alertOnOffline: boolean | null; alertOnOnline: boolean | null; alertOnSoftwareAlert: boolean | null; alertOnDiskFull: boolean | null; offlineAlertDelayMinutes: number | null }) =>
+    request<{ updated: number }>(`/api/groups/${id}/sync-notifications`, { method: "POST", body: JSON.stringify(data) }),
+  clearNotifications: (id: string) =>
+    request<{ removed: number }>(`/api/groups/${id}/sync-notifications`, { method: "DELETE" }),
 };
 
 // Types
+export interface DevicePage {
+  total: number;
+  page: number;
+  pageSize: number;
+  items: Device[];
+}
+
 export interface Device {
   id: string;
   hostname: string;
@@ -243,6 +309,9 @@ export interface Device {
   licenseType: string;
   isOnline: boolean;
   rustDeskId: string;
+  defenderStatusJson: string;
+  pendingUpdatesCount: number;
+  lastWindowsUpdateInstalled: string | null;
   customer: { id: string; name: string } | null;
   group: { id: string; name: string; color: string | null } | null;
 }
@@ -252,6 +321,15 @@ export interface DeviceDetail extends Device {
   licenseRequested: boolean;
   agentVersion: string;
   createdAt: string;
+  lastDiskAlertAt: string | null;
+  diskAlertAcknowledgedUsedPct: number | null;
+  rustDeskOptionsJson: string | null;
+  biosInfoJson: string;
+  assetTag: string;
+  location: string;
+  serialNumber: string;
+  purchaseDate: string | null;
+  warrantyExpiry: string | null;
   recentCheckins: Array<{
     checkedInAt: string;
     ramUsedGB: number;
@@ -264,6 +342,13 @@ export interface PatchDevice {
   customerId?: string | null;
   groupId?: string | null;
   rustDeskId?: string;
+  assetTag?: string;
+  location?: string;
+  serialNumber?: string;
+  purchaseDate?: string | null;
+  warrantyExpiry?: string | null;
+  clearPurchaseDate?: boolean;
+  clearWarrantyExpiry?: boolean;
 }
 
 export interface Software {
@@ -294,6 +379,7 @@ export interface PendingDevice {
   requestedAt: string;
   status: string;
   invitedByUsername: string | null;
+  deployKeyName: string | null;
 }
 
 export interface InstallToken {
@@ -329,6 +415,26 @@ export interface AppUser {
   username: string;
   role: string;
   createdAt: string;
+  isLocal: boolean;
+  displayName?: string;
+  email?: string;
+}
+
+export interface LdapSettings {
+  enabled: boolean;
+  host: string;
+  port: number;
+  transport: "TCP" | "STARTTLS" | "LDAPS";
+  ignoreCertificateErrors: boolean;
+  baseDn: string;
+  bindDn: string;
+  hasBindPassword: boolean;
+  userSearchBase: string;
+  userFilter: string;
+  adminGroup: string;
+  viewerGroup: string;
+  requireGroup: boolean;
+  useNestedGroups: boolean;
 }
 
 export interface RustDeskSettings {
@@ -336,6 +442,7 @@ export interface RustDeskSettings {
   publicKey: string;
   autoInstall: boolean;
   downloadUrl: string;
+  globalOptions: Record<string, string>;
 }
 
 export interface EmailSettings {
@@ -382,6 +489,7 @@ export interface DeviceCommand {
   parameters: string | null;
   issuedByUsername: string;
   createdAt: string;
+  scheduledFor: string | null;
   executedAt: string | null;
   result: string | null;
 }
@@ -451,6 +559,15 @@ export interface AgentVersion {
   releasedAt: string;
 }
 
+export interface ScriptTemplate {
+  id: string;
+  name: string;
+  description: string;
+  script: string;
+  createdBy: string;
+  createdAt: string;
+}
+
 export const installTokens = {
   list: () => request<InstallToken[]>("/api/install-tokens"),
   create: (expiryHours: number) =>
@@ -479,6 +596,8 @@ export interface NotificationDefaults {
   newPending: boolean;
   softwareAlert: boolean;
   diskFull: boolean;
+  offlineAlertDelayMinutes: number;
+  avSignatureAgeAlertDays: number;
 }
 
 export interface DeviceNotificationOverride {
@@ -488,6 +607,16 @@ export interface DeviceNotificationOverride {
   alertOnOnline: boolean | null;
   alertOnSoftwareAlert: boolean | null;
   alertOnDiskFull: boolean | null;
+  offlineAlertDelayMinutes: number | null;
+}
+
+export interface DeviceNotificationOverrideSingle {
+  alertOnOffline: boolean | null;
+  alertOnOnline: boolean | null;
+  alertOnSoftwareAlert: boolean | null;
+  alertOnDiskFull: boolean | null;
+  offlineAlertDelayMinutes: number | null;
+  sourceGroupId: string | null;
 }
 
 export interface CustomFieldDefinition {
@@ -515,6 +644,7 @@ export interface DashboardData {
     expiringLicenses: number;
     expiredLicenses: number;
     pendingCommands: number;
+    devicesWithUpdates: number;
   };
   recentAlerts: Array<{
     id: string;
@@ -535,4 +665,27 @@ export interface DashboardData {
   }>;
   devicesByGroup: Array<{ id: string; name: string; color: string | null; deviceCount: number }>;
   devicesByCustomer: Array<{ id: string; name: string; deviceCount: number }>;
+}
+
+export interface SoftwarePackage {
+  id: string;
+  name: string;
+  version: string;
+  type: string;
+  installCmd: string;
+  uninstallCmd: string | null;
+  description: string;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface DeploymentJob {
+  id: string;
+  status: string;
+  output: string | null;
+  createdBy: string;
+  createdAt: string;
+  executedAt: string | null;
+  package: { id: string; name: string; version: string; type: string };
+  device: { id: string; hostname: string };
 }

@@ -16,13 +16,15 @@ public class SettingsController : ControllerBase
     private readonly RuntimeSettings _runtimeSettings;
     private readonly AlertEmailService _email;
     private readonly IConfiguration _config;
+    private readonly AuditService _audit;
 
-    public SettingsController(AppDbContext db, RuntimeSettings runtimeSettings, AlertEmailService email, IConfiguration config)
+    public SettingsController(AppDbContext db, RuntimeSettings runtimeSettings, AlertEmailService email, IConfiguration config, AuditService audit)
     {
         _db = db;
         _runtimeSettings = runtimeSettings;
         _email = email;
         _config = config;
+        _audit = audit;
     }
 
     // GET /api/settings  — accessible to all authenticated users
@@ -176,6 +178,7 @@ public class SettingsController : ControllerBase
             publicKey = _runtimeSettings.RustDeskPublicKey,
             autoInstall = _runtimeSettings.RustDeskAutoInstall,
             downloadUrl = _runtimeSettings.RustDeskDownloadUrl,
+            globalOptions = _runtimeSettings.RustDeskGlobalOptions,
         });
     }
 
@@ -187,6 +190,7 @@ public class SettingsController : ControllerBase
         _runtimeSettings.RustDeskPublicKey = req.PublicKey ?? "";
         _runtimeSettings.RustDeskAutoInstall = req.AutoInstall;
         _runtimeSettings.RustDeskDownloadUrl = req.DownloadUrl ?? "";
+        _runtimeSettings.RustDeskGlobalOptions = req.GlobalOptions ?? new();
 
         foreach (var (key, value) in _runtimeSettings.RustDeskToDbEntries())
         {
@@ -198,6 +202,30 @@ public class SettingsController : ControllerBase
         }
         await _db.SaveChangesAsync();
         return Ok(new { message = "RustDesk-Einstellungen gespeichert." });
+    }
+
+    // POST /api/settings/rustdesk/force-apply
+    [HttpPost("rustdesk/force-apply")]
+    public async Task<IActionResult> ForceApplyRustDesk()
+    {
+        _runtimeSettings.RustDeskForceApplyVersion++;
+        var key = "RustDesk:ForceApplyVersion";
+        var value = _runtimeSettings.RustDeskForceApplyVersion.ToString();
+        var existing = await _db.AppSettings.FindAsync(key);
+        if (existing != null) existing.Value = value;
+        else _db.AppSettings.Add(new AppSetting { Key = key, Value = value });
+        await _db.SaveChangesAsync();
+        await _audit.LogAsync("ForceApplyRustDesk", "Settings", null, $"ForceApplyVersion={_runtimeSettings.RustDeskForceApplyVersion}");
+        return Ok(new { message = "Alle Agents werden beim nächsten Check-in neu konfiguriert.", version = _runtimeSettings.RustDeskForceApplyVersion });
+    }
+
+    // DELETE /api/settings/rustdesk/device-overrides
+    [HttpDelete("rustdesk/device-overrides")]
+    public async Task<IActionResult> ClearDeviceRustDeskOverrides()
+    {
+        await _db.Database.ExecuteSqlRawAsync("""UPDATE "Devices" SET "RustDeskOptionsJson" = NULL""");
+        await _audit.LogAsync("ClearDeviceRustDeskOverrides", "Settings", null, "Alle gerätespezifischen RustDesk-Overrides gelöscht.");
+        return Ok(new { message = "Alle gerätespezifischen RustDesk-Overrides wurden gelöscht." });
     }
 
     // PUT /api/settings/alerts
@@ -215,6 +243,91 @@ public class SettingsController : ControllerBase
         return Ok(new { message = "Alert-Einstellungen gespeichert." });
     }
 
+    // GET /api/settings/ldap
+    [HttpGet("ldap")]
+    public IActionResult GetLdap()
+    {
+        return Ok(new
+        {
+            enabled = _runtimeSettings.LdapEnabled,
+            host = _runtimeSettings.LdapHost,
+            port = _runtimeSettings.LdapPort,
+            transport = _runtimeSettings.LdapTransport,
+            ignoreCertificateErrors = _runtimeSettings.LdapIgnoreCertificateErrors,
+            baseDn = _runtimeSettings.LdapBaseDn,
+            bindDn = _runtimeSettings.LdapBindDn,
+            hasBindPassword = !string.IsNullOrEmpty(_runtimeSettings.LdapBindPassword),
+            userSearchBase = _runtimeSettings.LdapUserSearchBase,
+            userFilter = _runtimeSettings.LdapUserFilter,
+            adminGroup = _runtimeSettings.LdapAdminGroup,
+            viewerGroup = _runtimeSettings.LdapViewerGroup,
+            requireGroup = _runtimeSettings.LdapRequireGroup,
+            useNestedGroups = _runtimeSettings.LdapUseNestedGroups,
+        });
+    }
+
+    // PUT /api/settings/ldap
+    [HttpPut("ldap")]
+    public async Task<IActionResult> SaveLdap([FromBody] LdapSettingsRequest req)
+    {
+        _runtimeSettings.LdapEnabled = req.Enabled;
+        _runtimeSettings.LdapHost = req.Host?.Trim() ?? "";
+        _runtimeSettings.LdapPort = req.Port > 0 ? req.Port : 389;
+        _runtimeSettings.LdapTransport = req.Transport is "TCP" or "STARTTLS" or "LDAPS" ? req.Transport : "TCP";
+        _runtimeSettings.LdapIgnoreCertificateErrors = req.IgnoreCertificateErrors;
+        _runtimeSettings.LdapBaseDn = req.BaseDn?.Trim() ?? "";
+        _runtimeSettings.LdapBindDn = req.BindDn?.Trim() ?? "";
+        if (!string.IsNullOrEmpty(req.BindPassword))
+            _runtimeSettings.LdapBindPassword = req.BindPassword;
+        _runtimeSettings.LdapUserSearchBase = req.UserSearchBase?.Trim() ?? "";
+        _runtimeSettings.LdapUserFilter = string.IsNullOrWhiteSpace(req.UserFilter)
+            ? "(&(objectClass=user)(|(sAMAccountName={0})(userPrincipalName={0})))"
+            : req.UserFilter.Trim();
+        _runtimeSettings.LdapAdminGroup = req.AdminGroup?.Trim() ?? "";
+        _runtimeSettings.LdapViewerGroup = req.ViewerGroup?.Trim() ?? "";
+        _runtimeSettings.LdapRequireGroup = req.RequireGroup;
+        _runtimeSettings.LdapUseNestedGroups = req.UseNestedGroups;
+
+        var entries = new Dictionary<string, string>
+        {
+            ["Ldap:Enabled"] = _runtimeSettings.LdapEnabled.ToString(),
+            ["Ldap:Host"] = _runtimeSettings.LdapHost,
+            ["Ldap:Port"] = _runtimeSettings.LdapPort.ToString(),
+            ["Ldap:Transport"] = _runtimeSettings.LdapTransport,
+            ["Ldap:IgnoreCertificateErrors"] = _runtimeSettings.LdapIgnoreCertificateErrors.ToString(),
+            ["Ldap:BaseDn"] = _runtimeSettings.LdapBaseDn,
+            ["Ldap:BindDn"] = _runtimeSettings.LdapBindDn,
+            ["Ldap:BindPassword"] = _runtimeSettings.LdapBindPassword,
+            ["Ldap:UserSearchBase"] = _runtimeSettings.LdapUserSearchBase,
+            ["Ldap:UserFilter"] = _runtimeSettings.LdapUserFilter,
+            ["Ldap:AdminGroup"] = _runtimeSettings.LdapAdminGroup,
+            ["Ldap:ViewerGroup"] = _runtimeSettings.LdapViewerGroup,
+            ["Ldap:RequireGroup"] = _runtimeSettings.LdapRequireGroup.ToString(),
+            ["Ldap:UseNestedGroups"] = _runtimeSettings.LdapUseNestedGroups.ToString(),
+        };
+
+        foreach (var (key, value) in entries)
+        {
+            var s = await _db.AppSettings.FindAsync(key);
+            if (s != null) s.Value = value;
+            else _db.AppSettings.Add(new AppSetting { Key = key, Value = value });
+        }
+
+        await _db.SaveChangesAsync();
+        await _audit.LogAsync("settings.ldap.save", "Settings", null, $"LDAP {(req.Enabled ? "aktiviert" : "deaktiviert")}");
+        return Ok(new { message = "LDAP-Einstellungen gespeichert." });
+    }
+
+    // POST /api/settings/ldap/test
+    [HttpPost("ldap/test")]
+    public async Task<IActionResult> TestLdap([FromServices] LdapService ldap)
+    {
+        var error = await ldap.TestConnectionAsync();
+        if (error == null)
+            return Ok(new { message = "Verbindung erfolgreich." });
+        return BadRequest(new { message = $"Verbindung fehlgeschlagen: {error}" });
+    }
+
 }
 
 public record EmailSettingsRequest(
@@ -227,7 +340,12 @@ public record EmailSettingsRequest(
     bool UseSsl);
 
 public record AlertSettingsRequest(int DiskAlertThresholdPercent);
+public record LdapSettingsRequest(
+    bool Enabled, string? Host, int Port, string Transport, bool IgnoreCertificateErrors,
+    string? BaseDn, string? BindDn, string? BindPassword,
+    string? UserSearchBase, string? UserFilter,
+    string? AdminGroup, string? ViewerGroup, bool RequireGroup, bool UseNestedGroups);
 public record CheckinSettingsRequest(int CheckinIntervalMinutes);
-public record RustDeskSettingsRequest(string? RelayHost, string? PublicKey, bool AutoInstall, string? DownloadUrl);
+public record RustDeskSettingsRequest(string? RelayHost, string? PublicKey, bool AutoInstall, string? DownloadUrl, Dictionary<string, string>? GlobalOptions = null);
 public record AgentSettingsRequest(bool AutoUpdate);
 public record ServerUrlRequest(string? AgentServerUrl);

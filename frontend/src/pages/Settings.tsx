@@ -4,14 +4,17 @@ import {
   KeyRound, UserPlus, Trash2, RefreshCw, Mail, Send, CheckCircle2, XCircle,
   ShieldAlert, Plus, Clock, Download, ChevronLeft, ChevronRight, AlertTriangle,
   Tag, Monitor, Settings2, Users, FileText, Cpu, Bell, Pencil, Link,
+  Building2, Server, Laptop, Copy, Terminal, Package,
 } from "lucide-react";
 import {
   auth, users, settings, software, audit, agentVersions, devices as devicesApi,
-  notifications, customFields, deployKeys as deployKeysApi,
+  notifications, customFields, deployKeys as deployKeysApi, scriptTemplates,
+  softwarePackages,
   type AppUser, type EmailSettingsInput, type BlacklistEntry,
   type AuditLogEntry, type AgentVersion, type RustDeskSettings,
   type NotificationDefaults, type DeviceNotificationOverride,
-  type CustomFieldDefinition, type DeployKey,
+  type CustomFieldDefinition, type DeployKey, type ScriptTemplate,
+  type SoftwarePackage as SoftwarePackageType, type LdapSettings,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,12 +23,14 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { RustDeskOptionsDialog } from "@/components/RustDeskOptionsDialog";
 
 type Section =
   | "allgemein" | "agent" | "deploykeys"
   | "email" | "benachrichtigungen"
   | "felder" | "software"
-  | "fernzugriff"
+  | "fernzugriff" | "scripts" | "packages"
+  | "ldap"
   | "benutzer" | "protokoll"
   | "konto";
 
@@ -34,27 +39,24 @@ const adminNavGroups: { label: string | null; items: { id: Section; label: strin
     label: "System",
     items: [
       { id: "allgemein", label: "Allgemein", icon: Settings2 },
-      { id: "agent", label: "Agent", icon: Cpu },
-      { id: "deploykeys", label: "Deploy-Keys", icon: KeyRound },
+      { id: "email", label: "E-Mail & SMTP", icon: Mail },
+      { id: "benachrichtigungen", label: "Benachrichtigungen", icon: Bell },
     ],
   },
   {
-    label: "Kommunikation",
+    label: "Agent",
     items: [
-      { id: "email", label: "E-Mail & SMTP", icon: Mail },
-      { id: "benachrichtigungen", label: "Benachrichtigungen", icon: Bell },
+      { id: "agent", label: "Versionen", icon: Cpu },
+      { id: "deploykeys", label: "Deploy-Keys", icon: KeyRound },
+      { id: "scripts", label: "Script-Bibliothek", icon: Terminal },
+      { id: "packages", label: "Software-Pakete", icon: Package },
     ],
   },
   {
     label: "Geräte",
     items: [
       { id: "felder", label: "Felder", icon: Tag },
-      { id: "software", label: "Software", icon: ShieldAlert },
-    ],
-  },
-  {
-    label: null,
-    items: [
+      { id: "software", label: "Blacklist", icon: ShieldAlert },
       { id: "fernzugriff", label: "Fernzugriff", icon: Monitor },
     ],
   },
@@ -62,6 +64,7 @@ const adminNavGroups: { label: string | null; items: { id: Section; label: strin
     label: "Verwaltung",
     items: [
       { id: "benutzer", label: "Benutzer", icon: Users },
+      { id: "ldap", label: "LDAP / AD", icon: Server },
       { id: "protokoll", label: "Protokoll", icon: FileText },
     ],
   },
@@ -136,22 +139,27 @@ export function Settings() {
 
   // --- Notification settings ---
   const [notifyDefaults, setNotifyDefaults] = useState<NotificationDefaults>({
-    deviceOffline: true, deviceOnline: true, newPending: true, softwareAlert: true, diskFull: true,
+    deviceOffline: true, deviceOnline: true, newPending: true, softwareAlert: true, diskFull: true, offlineAlertDelayMinutes: 0, avSignatureAgeAlertDays: 7,
   });
   const [notifyOverrides, setNotifyOverrides] = useState<DeviceNotificationOverride[]>([]);
   const [notifySaveMsg, setNotifySaveMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [notifyOverrideDialog, setNotifyOverrideDialog] = useState<DeviceNotificationOverride | null | "new">(null);
   const [overrideDeviceSearch, setOverrideDeviceSearch] = useState("");
   const [overrideDeviceId, setOverrideDeviceId] = useState("");
-  const [overrideValues, setOverrideValues] = useState({ alertOnOffline: null as boolean | null, alertOnOnline: null as boolean | null, alertOnSoftwareAlert: null as boolean | null, alertOnDiskFull: null as boolean | null });
+  const [overrideValues, setOverrideValues] = useState({ alertOnOffline: null as boolean | null, alertOnOnline: null as boolean | null, alertOnSoftwareAlert: null as boolean | null, alertOnDiskFull: null as boolean | null, offlineAlertDelayMinutes: null as number | null });
   const [allDevices, setAllDevices] = useState<{ id: string; hostname: string; description: string }[]>([]);
 
   // --- RustDesk settings ---
   const [rustDesk, setRustDesk] = useState<RustDeskSettings>({
-    relayHost: "", publicKey: "", autoInstall: false, downloadUrl: "",
+    relayHost: "", publicKey: "", autoInstall: false, downloadUrl: "", globalOptions: {},
   });
   const [rustDeskSaveMsg, setRustDeskSaveMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [rustDeskLoading, setRustDeskLoading] = useState(false);
+  const [rdOptionsOpen, setRdOptionsOpen] = useState(false);
+  const [rdForceApplyLoading, setRdForceApplyLoading] = useState(false);
+  const [rdForceApplyMsg, setRdForceApplyMsg] = useState<string | null>(null);
+  const [rdClearLoading, setRdClearLoading] = useState(false);
+  const [rdClearMsg, setRdClearMsg] = useState<string | null>(null);
 
   // --- Software Blacklist ---
   const [blacklist, setBlacklist] = useState<BlacklistEntry[]>([]);
@@ -184,6 +192,35 @@ export function Settings() {
   const [dkCopied, setDkCopied] = useState<string | null>(null);
   const [dkNewKey, setDkNewKey] = useState<DeployKey | null>(null);
 
+  // --- Script Library ---
+  const [scriptList, setScriptList] = useState<ScriptTemplate[]>([]);
+  const [scriptDialog, setScriptDialog] = useState<"new" | ScriptTemplate | null>(null);
+  const [packageList, setPackageList] = useState<SoftwarePackageType[]>([]);
+  const [packageDialog, setPackageDialog] = useState<"new" | SoftwarePackageType | null>(null);
+  const [pkgName, setPkgName] = useState("");
+  const [pkgVersion, setPkgVersion] = useState("");
+  const [pkgType, setPkgType] = useState("winget");
+  const [pkgInstallCmd, setPkgInstallCmd] = useState("");
+  const [pkgUninstallCmd, setPkgUninstallCmd] = useState("");
+  const [pkgDesc, setPkgDesc] = useState("");
+  const [scriptName, setScriptName] = useState("");
+  const [scriptDesc, setScriptDesc] = useState("");
+  const [scriptBody, setScriptBody] = useState("");
+  const [scriptLoading, setScriptLoading] = useState(false);
+
+  // --- LDAP ---
+  const [ldap, setLdap] = useState<LdapSettings>({
+    enabled: false, host: "", port: 389, transport: "TCP" as const, ignoreCertificateErrors: false,
+    baseDn: "", bindDn: "", hasBindPassword: false,
+    userSearchBase: "", userFilter: "(&(objectClass=user)(|(sAMAccountName={0})(userPrincipalName={0})))",
+    adminGroup: "", viewerGroup: "", requireGroup: false, useNestedGroups: false,
+  });
+  const [ldapBindPassword, setLdapBindPassword] = useState("");
+  const [ldapSaveMsg, setLdapSaveMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [ldapTestMsg, setLdapTestMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [ldapSaving, setLdapSaving] = useState(false);
+  const [ldapTesting, setLdapTesting] = useState(false);
+
   // --- Agent Versions ---
   const [agentVers, setAgentVers] = useState<AgentVersion[]>([]);
   const [versionDialog, setVersionDialog] = useState(false);
@@ -193,6 +230,11 @@ export function Settings() {
   const [verChangelog, setVerChangelog] = useState("");
   const [verIsLatest, setVerIsLatest] = useState(true);
   const [verLoading, setVerLoading] = useState(false);
+  // changelog edit dialog
+  const [changelogEditDialog, setChangelogEditDialog] = useState<{ id: string; text: string } | null>(null);
+  const [changelogEditLoading, setChangelogEditLoading] = useState(false);
+  // expanded changelog rows
+  const [expandedChangelogs, setExpandedChangelogs] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     settings.getEmail().then(data => {
@@ -216,9 +258,12 @@ export function Settings() {
     settings.getAgentSettings().then(s => setAutoUpdate(s.autoUpdate)).catch(() => {});
     customFields.getDefinitions().then(setFieldDefs).catch(() => {});
     deployKeysApi.list().then(setDkList).catch(() => {});
+    scriptTemplates.list().then(setScriptList).catch(() => {});
+    softwarePackages.list().then(setPackageList).catch(() => {});
     notifications.getDefaults().then(setNotifyDefaults).catch(() => {});
     notifications.getDeviceOverrides().then(setNotifyOverrides).catch(() => {});
-    devicesApi.list().then(list => setAllDevices(list.map(d => ({ id: d.id, hostname: d.hostname, description: d.description })))).catch(() => {});
+    settings.getLdap().then(setLdap).catch(() => {});
+    devicesApi.list().then(list => setAllDevices(list.items.map(d => ({ id: d.id, hostname: d.hostname, description: d.description })))).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -297,6 +342,27 @@ export function Settings() {
     } finally {
       setRustDeskLoading(false);
     }
+  };
+
+  const handleForceApplyRustDesk = async () => {
+    setRdForceApplyLoading(true);
+    setRdForceApplyMsg(null);
+    try {
+      await settings.forceApplyRustDesk();
+      setRdForceApplyMsg("Alle Agents konfigurieren beim nächsten Check-in neu.");
+      setTimeout(() => setRdForceApplyMsg(null), 4000);
+    } catch { setRdForceApplyMsg("Fehler"); } finally { setRdForceApplyLoading(false); }
+  };
+
+  const handleClearDeviceOverrides = async () => {
+    if (!confirm("Alle gerätespezifischen RustDesk-Overrides löschen? Geräte verwenden dann nur noch die globalen Einstellungen.")) return;
+    setRdClearLoading(true);
+    setRdClearMsg(null);
+    try {
+      await settings.clearDeviceRustDeskOverrides();
+      setRdClearMsg("Alle Overrides gelöscht.");
+      setTimeout(() => setRdClearMsg(null), 4000);
+    } catch { setRdClearMsg("Fehler"); } finally { setRdClearLoading(false); }
   };
 
   const fetchUsers = async () => {
@@ -394,14 +460,14 @@ export function Settings() {
   const openNewOverride = () => {
     setOverrideDeviceId("");
     setOverrideDeviceSearch("");
-    setOverrideValues({ alertOnOffline: null, alertOnOnline: null, alertOnSoftwareAlert: null, alertOnDiskFull: null });
+    setOverrideValues({ alertOnOffline: null, alertOnOnline: null, alertOnSoftwareAlert: null, alertOnDiskFull: null, offlineAlertDelayMinutes: null });
     setNotifyOverrideDialog("new");
   };
 
   const openEditOverride = (o: DeviceNotificationOverride) => {
     setOverrideDeviceId(o.device.id);
     setOverrideDeviceSearch(o.device.hostname);
-    setOverrideValues({ alertOnOffline: o.alertOnOffline, alertOnOnline: o.alertOnOnline, alertOnSoftwareAlert: o.alertOnSoftwareAlert, alertOnDiskFull: o.alertOnDiskFull });
+    setOverrideValues({ alertOnOffline: o.alertOnOffline, alertOnOnline: o.alertOnOnline, alertOnSoftwareAlert: o.alertOnSoftwareAlert, alertOnDiskFull: o.alertOnDiskFull, offlineAlertDelayMinutes: null });
     setNotifyOverrideDialog(o);
   };
 
@@ -426,6 +492,46 @@ export function Settings() {
     } catch (err: any) {
       setAutoUpdateSaveMsg({ ok: false, text: err.message || "Fehler" });
     }
+  };
+
+  const openNewScript = () => { setScriptName(""); setScriptDesc(""); setScriptBody(""); setScriptDialog("new"); };
+  const openEditScript = (t: ScriptTemplate) => { setScriptName(t.name); setScriptDesc(t.description); setScriptBody(t.script); setScriptDialog(t); };
+  const handleSaveScript = async () => {
+    if (!scriptName.trim() || !scriptBody.trim()) return;
+    setScriptLoading(true);
+    if (scriptDialog === "new") {
+      await scriptTemplates.create({ name: scriptName, description: scriptDesc, script: scriptBody }).catch(() => {});
+    } else if (scriptDialog && typeof scriptDialog === "object") {
+      await scriptTemplates.update(scriptDialog.id, { name: scriptName, description: scriptDesc, script: scriptBody }).catch(() => {});
+    }
+    setScriptList(await scriptTemplates.list().catch(() => []));
+    setScriptDialog(null);
+    setScriptLoading(false);
+  };
+  const handleDeleteScript = async (id: string) => {
+    await scriptTemplates.delete(id).catch(() => {});
+    setScriptList(await scriptTemplates.list().catch(() => []));
+  };
+
+  const openNewPackage = () => { setPkgName(""); setPkgVersion(""); setPkgType("winget"); setPkgInstallCmd(""); setPkgUninstallCmd(""); setPkgDesc(""); setPackageDialog("new"); };
+  const openEditPackage = (p: SoftwarePackageType) => {
+    setPkgName(p.name); setPkgVersion(p.version); setPkgType(p.type);
+    setPkgInstallCmd(p.installCmd); setPkgUninstallCmd(p.uninstallCmd ?? ""); setPkgDesc(p.description);
+    setPackageDialog(p);
+  };
+  const handleSavePackage = async () => {
+    const data = { name: pkgName, version: pkgVersion, type: pkgType, installCmd: pkgInstallCmd, uninstallCmd: pkgUninstallCmd || undefined, description: pkgDesc };
+    if (packageDialog === "new") {
+      await softwarePackages.create(data).catch(() => {});
+    } else if (packageDialog && typeof packageDialog === "object") {
+      await softwarePackages.update(packageDialog.id, data).catch(() => {});
+    }
+    setPackageList(await softwarePackages.list().catch(() => []));
+    setPackageDialog(null);
+  };
+  const handleDeletePackage = async (id: string) => {
+    await softwarePackages.delete(id).catch(() => {});
+    setPackageList(await softwarePackages.list().catch(() => []));
   };
 
   const handleCreateDeployKey = async () => {
@@ -454,6 +560,16 @@ export function Settings() {
     setTimeout(() => setDkCopied(null), 2000);
   };
 
+  const handleDownloadPs1 = (content: string, filename: string) => {
+    const blob = new Blob([content], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const handleAddField = async () => {
     if (!newFieldName.trim()) return;
     setFieldLoading(true);
@@ -470,6 +586,34 @@ export function Settings() {
     setFieldDefs(prev => prev.filter(d => d.id !== id));
   };
 
+  const handleSaveLdap = async () => {
+    setLdapSaveMsg(null);
+    setLdapSaving(true);
+    try {
+      const res = await settings.saveLdap({ ...ldap, bindPassword: ldapBindPassword || undefined });
+      setLdapBindPassword("");
+      setLdapSaveMsg({ ok: true, text: res.message });
+      setLdap(prev => ({ ...prev, hasBindPassword: prev.hasBindPassword || !!ldapBindPassword }));
+    } catch (err: any) {
+      setLdapSaveMsg({ ok: false, text: err.message || "Fehler beim Speichern." });
+    } finally {
+      setLdapSaving(false);
+    }
+  };
+
+  const handleTestLdap = async () => {
+    setLdapTestMsg(null);
+    setLdapTesting(true);
+    try {
+      const res = await settings.testLdap();
+      setLdapTestMsg({ ok: true, text: res.message });
+    } catch (err: any) {
+      setLdapTestMsg({ ok: false, text: err.message || "Verbindungstest fehlgeschlagen." });
+    } finally {
+      setLdapTesting(false);
+    }
+  };
+
   const handlePublishAgent = async () => {
     setPublishLoading(true);
     try {
@@ -481,6 +625,21 @@ export function Settings() {
       toast({ title: "Publish fehlgeschlagen", description: err.message || "Fehler", variant: "warning" });
     } finally {
       setPublishLoading(false);
+    }
+  };
+
+  const handleSaveChangelog = async () => {
+    if (!changelogEditDialog) return;
+    setChangelogEditLoading(true);
+    try {
+      await agentVersions.updateChangelog(changelogEditDialog.id, changelogEditDialog.text);
+      setAgentVers(prev => prev.map(v => v.id === changelogEditDialog.id ? { ...v, changelog: changelogEditDialog.text } : v));
+      setChangelogEditDialog(null);
+      toast({ title: "Changelog gespeichert" });
+    } catch (err: any) {
+      toast({ title: "Fehler", description: err.message || "Changelog konnte nicht gespeichert werden.", variant: "warning" });
+    } finally {
+      setChangelogEditLoading(false);
     }
   };
 
@@ -549,7 +708,7 @@ export function Settings() {
 
       {/* ── Section content ───────────────────────────────────────────────── */}
       <div className="flex-1 overflow-y-auto">
-        <div className="p-6 max-w-3xl space-y-5">
+        <div className="p-4 sm:p-6 max-w-3xl space-y-4 sm:space-y-5">
 
           {/* ── Allgemein ─────────────────────────────────────────────── */}
           {activeSection === "allgemein" && isAdmin && (
@@ -674,18 +833,67 @@ export function Settings() {
                   </div>
 
                   {dkNewKey && (
-                    <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 p-4 space-y-2">
+                    <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 p-4 space-y-3">
                       <p className="text-sm font-medium text-emerald-600 flex items-center gap-1.5">
                         <CheckCircle2 className="h-4 w-4" />
-                        Deploy-Key erstellt — nur jetzt sichtbar
+                        Deploy-Key erstellt — Key und Skripte nur jetzt sichtbar
                       </p>
-                      <code className="block text-xs font-mono break-all bg-muted rounded px-2 py-1.5">
-                        {dkNewKey.key}
-                      </code>
-                      <Button size="sm" variant="outline" onClick={() => handleCopyDk(dkNewKey.key, dkNewKey.id)}>
-                        {dkCopied === dkNewKey.id ? <CheckCircle2 className="h-3.5 w-3.5 mr-1.5 text-green-600" /> : <Download className="h-3.5 w-3.5 mr-1.5" />}
-                        Key kopieren
-                      </Button>
+                      <div className="flex items-center gap-2">
+                        <code className="flex-1 text-xs font-mono break-all bg-muted rounded px-2 py-1.5">
+                          {dkNewKey.key}
+                        </code>
+                        <Button size="sm" variant="outline" onClick={() => handleCopyDk(dkNewKey.key, dkNewKey.id)}>
+                          {dkCopied === dkNewKey.id ? <CheckCircle2 className="h-3.5 w-3.5 text-green-600" /> : <Download className="h-3.5 w-3.5" />}
+                        </Button>
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <p className="text-xs font-semibold text-emerald-700 dark:text-emerald-400 uppercase tracking-wide">GPO Startup Script (fertig ausgefüllt)</p>
+                        <pre className="text-xs font-mono overflow-x-auto whitespace-pre bg-background border rounded px-3 py-2 text-foreground">{`[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$wc = [System.Net.WebClient]::new()
+$wc.Headers.Add('X-Deploy-Key', '${dkNewKey.key}')
+$wc.DownloadFile('${agentServerUrl || "https://api.example.com"}/install/deploy/download', '\\\\dc\\SYSVOL\\domain\\scripts\\HackIT-Install.ps1')`}</pre>
+                        <div className="flex gap-2">
+                          <Button size="sm" variant="outline" onClick={() => handleCopyDk(
+                            `[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12\n$wc = [System.Net.WebClient]::new()\n$wc.Headers.Add('X-Deploy-Key', '${dkNewKey.key}')\n$wc.DownloadFile('${agentServerUrl || "https://api.example.com"}/install/deploy/download', '\\\\dc\\SYSVOL\\domain\\scripts\\HackIT-Install.ps1')`,
+                            dkNewKey.id + "-script"
+                          )}>
+                            {dkCopied === dkNewKey.id + "-script" ? <CheckCircle2 className="h-3.5 w-3.5 mr-1.5 text-green-600" /> : <Copy className="h-3.5 w-3.5 mr-1.5" />}
+                            Kopieren
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={() => handleDownloadPs1(
+                            `[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12\r\n$wc = [System.Net.WebClient]::new()\r\n$wc.Headers.Add('X-Deploy-Key', '${dkNewKey.key}')\r\n$wc.DownloadFile('${agentServerUrl || "https://api.example.com"}/install/deploy/download', '\\\\dc\\SYSVOL\\domain\\scripts\\HackIT-Install.ps1')`,
+                            'HackIT-GPO-Install.ps1'
+                          )}>
+                            <Download className="h-3.5 w-3.5 mr-1.5" />
+                            Herunterladen
+                          </Button>
+                        </div>
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <p className="text-xs font-semibold text-emerald-700 dark:text-emerald-400 uppercase tracking-wide">Direkt ausführen (kein AD)</p>
+                        <pre className="text-xs font-mono overflow-x-auto whitespace-pre bg-background border rounded px-3 py-2 text-foreground">{`[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$wc = [System.Net.WebClient]::new()
+$wc.Headers.Add('X-Deploy-Key', '${dkNewKey.key}')
+$wc.DownloadString('${agentServerUrl || "https://api.example.com"}/install/deploy/download') | Invoke-Expression`}</pre>
+                        <div className="flex gap-2">
+                          <Button size="sm" variant="outline" onClick={() => handleCopyDk(
+                            `[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12\n$wc = [System.Net.WebClient]::new()\n$wc.Headers.Add('X-Deploy-Key', '${dkNewKey.key}')\n$wc.DownloadString('${agentServerUrl || "https://api.example.com"}/install/deploy/download') | Invoke-Expression`,
+                            dkNewKey.id + "-invoke"
+                          )}>
+                            {dkCopied === dkNewKey.id + "-invoke" ? <CheckCircle2 className="h-3.5 w-3.5 mr-1.5 text-green-600" /> : <Copy className="h-3.5 w-3.5 mr-1.5" />}
+                            Kopieren
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={() => handleDownloadPs1(
+                            `[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12\r\n$wc = [System.Net.WebClient]::new()\r\n$wc.Headers.Add('X-Deploy-Key', '${dkNewKey.key}')\r\n$wc.DownloadString('${agentServerUrl || "https://api.example.com"}/install/deploy/download') | Invoke-Expression`,
+                            'HackIT-DirectInstall.ps1'
+                          )}>
+                            <Download className="h-3.5 w-3.5 mr-1.5" />
+                            Herunterladen
+                          </Button>
+                        </div>
+                      </div>
                     </div>
                   )}
 
@@ -724,24 +932,81 @@ export function Settings() {
                     </div>
                   )}
 
-                  <div className="rounded-md border border-border bg-muted/20 p-4 space-y-3">
-                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">MSI — Custom Image / SCCM / MDT</p>
-                    <p className="text-xs text-muted-foreground">MSI herunterladen und mit <code className="bg-muted px-1 rounded">msiexec</code> installieren. Kein Ablaufdatum.</p>
-                    <pre className="text-xs font-mono overflow-x-auto whitespace-pre bg-background border rounded px-3 py-2">{`# 1. MSI herunterladen (einmalig, z.B. ins Image-Share)
-Invoke-WebRequest -Uri "${agentServerUrl || "https://api.example.com"}/install/deploy/download" \`
-  -Headers @{ "X-Deploy-Key" = "DEIN_KEY_HIER" } \`
+                  {/* Deployment recommendation */}
+                  <div className="rounded-md border border-border overflow-hidden">
+                    <div className="bg-muted/30 px-4 py-2.5 border-b border-border">
+                      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Welche Methode passt zum Kunden?</p>
+                    </div>
+                    <div className="divide-y divide-border/50">
+                      <div className="flex items-start gap-3 px-4 py-3">
+                        <Building2 className="h-4 w-4 text-blue-500 mt-0.5 shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium">Active Directory (Domäne vorhanden)</p>
+                          <p className="text-xs text-muted-foreground mt-0.5">GPO Startup Script → einmal auf SYSVOL ablegen, automatisch auf alle PCs</p>
+                        </div>
+                        <span className="text-xs font-medium text-blue-600 dark:text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-full shrink-0">Empfohlen</span>
+                      </div>
+                      <div className="flex items-start gap-3 px-4 py-3">
+                        <Server className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium">SCCM, Intune oder MDT</p>
+                          <p className="text-xs text-muted-foreground mt-0.5">MSI direkt — Properties über die Deployment-Infrastruktur übergeben. <span className="text-amber-600 dark:text-amber-400">GPO Software Installation funktioniert hier nicht</span> (keine Property-Übergabe möglich).</p>
+                        </div>
+                      </div>
+                      <div className="flex items-start gap-3 px-4 py-3">
+                        <Laptop className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium">Kein AD, kein MDM (Einzelplatz / Workgroup)</p>
+                          <p className="text-xs text-muted-foreground mt-0.5">PS1 direkt als Administrator ausführen, oder per RMM-Tool verteilen (z.B. NinjaRMM, Datto, Atera)</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-md border border-border bg-muted/20 p-4 space-y-4">
+
+                    <div className="space-y-2">
+                      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">GPO Startup Script — empfohlen für AD-Umgebungen</p>
+                      <p className="text-xs text-muted-foreground">
+                        Script herunterladen, auf SYSVOL ablegen, per GPO als Computer-Startup-Script einbinden.
+                        Läuft bei jedem Boot — erkennt automatisch ob der Agent bereits installiert ist.
+                        <span className="font-medium text-amber-600 dark:text-amber-400"> Neuen Key erstellen → fertiges Skript wird oben angezeigt.</span>
+                      </p>
+                      <pre className="text-xs font-mono overflow-x-auto whitespace-pre bg-background border rounded px-3 py-2">{`[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$wc = [System.Net.WebClient]::new()
+$wc.Headers.Add('X-Deploy-Key', 'DEPLOY_KEY')
+$wc.DownloadFile('${agentServerUrl || "https://api.example.com"}/install/deploy/download', '\\\\dc\\SYSVOL\\domain\\scripts\\HackIT-Install.ps1')`}</pre>
+                      <p className="text-xs text-muted-foreground">Kein AD? Script direkt als Administrator ausführen oder per RMM verteilen.</p>
+                      <pre className="text-xs font-mono overflow-x-auto whitespace-pre bg-background border rounded px-3 py-2">{`[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$wc = [System.Net.WebClient]::new()
+$wc.Headers.Add('X-Deploy-Key', 'DEPLOY_KEY')
+$wc.DownloadString('${agentServerUrl || "https://api.example.com"}/install/deploy/download') | Invoke-Expression`}</pre>
+                    </div>
+
+                    <div className="space-y-2 pt-1 border-t border-border/50">
+                      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">SCCM / Intune / MDT (MSI direkt)</p>
+                      <p className="text-xs text-muted-foreground">
+                        MSI einmalig herunterladen und in der Deployment-Infrastruktur hinterlegen.
+                        <strong className="text-foreground"> Wichtig:</strong> SERVERURL und DEPLOYKEY müssen als msiexec-Properties übergeben werden — GPO Software Installation reicht dafür nicht.
+                      </p>
+                      <pre className="text-xs font-mono overflow-x-auto whitespace-pre bg-background border rounded px-3 py-2">{`Invoke-WebRequest -Uri "${agentServerUrl || "https://api.example.com"}/install/deploy/msi" \`
+  -Headers @{ "X-Deploy-Key" = "DEPLOY_KEY" } \`
   -OutFile "HackITSentry-Setup.msi"
 
-# 2. Im Image / Deployment installieren
 msiexec /i "HackITSentry-Setup.msi" \`
   SERVERURL="${agentServerUrl || "https://api.example.com"}" \`
-  DEPLOYKEY="DEIN_KEY_HIER" \`
+  DEPLOYKEY="DEPLOY_KEY" \`
   /quiet /norestart`}</pre>
-                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mt-1">PowerShell-Fallback (EXE)</p>
-                    <pre className="text-xs font-mono overflow-x-auto whitespace-pre bg-background border rounded px-3 py-2">{`Invoke-WebRequest -Uri "${agentServerUrl || "https://api.example.com"}/install/deploy/download" \`
-  -Headers @{ "X-Deploy-Key" = "DEIN_KEY_HIER" } \`
+                    </div>
+
+                    <div className="space-y-2 pt-1 border-t border-border/50">
+                      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Fallback (EXE, ohne MSI)</p>
+                      <pre className="text-xs font-mono overflow-x-auto whitespace-pre bg-background border rounded px-3 py-2">{`Invoke-WebRequest -Uri "${agentServerUrl || "https://api.example.com"}/install/deploy/download" \`
+  -Headers @{ "X-Deploy-Key" = "DEPLOY_KEY" } \`
   -OutFile "$env:TEMP\\HackITSentry-Setup.exe"
 Start-Process "$env:TEMP\\HackITSentry-Setup.exe" -Verb RunAs -Wait`}</pre>
+                    </div>
+
                   </div>
                 </CardContent>
               </Card>
@@ -823,36 +1088,65 @@ Start-Process "$env:TEMP\\HackITSentry-Setup.exe" -Verb RunAs -Wait`}</pre>
                         </thead>
                         <tbody>
                           {agentVers.map(v => (
-                            <tr key={v.id} className="border-t border-border/50">
-                              <td className="px-4 py-2.5">
-                                <div className="flex items-center gap-2">
-                                  <span className="font-mono text-xs">{v.version}</span>
-                                  {v.isLatest && <Badge variant="secondary" className="text-xs">aktuell</Badge>}
-                                </div>
-                              </td>
-                              <td className="px-4 py-2.5 text-muted-foreground text-xs truncate max-w-[220px]">
-                                {v.downloadUrl ? (
-                                  <a href={v.downloadUrl} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
-                                    {v.downloadUrl}
-                                  </a>
-                                ) : "—"}
-                              </td>
-                              <td className="px-4 py-2.5 text-muted-foreground text-xs">
-                                {new Date(v.releasedAt).toLocaleDateString("de-DE")}
-                              </td>
-                              <td className="px-4 py-2.5">
-                                <div className="flex gap-1 justify-end">
-                                  {!v.isLatest && (
-                                    <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => handleSetLatest(v.id)}>
-                                      Als aktuell
+                            <>
+                              <tr key={v.id} className="border-t border-border/50">
+                                <td className="px-4 py-2.5">
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-mono text-xs">{v.version}</span>
+                                    {v.isLatest && <Badge variant="secondary" className="text-xs">aktuell</Badge>}
+                                  </div>
+                                </td>
+                                <td className="px-4 py-2.5 text-muted-foreground text-xs truncate max-w-[220px]">
+                                  {v.downloadUrl ? (
+                                    <a href={v.downloadUrl} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+                                      {v.downloadUrl}
+                                    </a>
+                                  ) : "—"}
+                                </td>
+                                <td className="px-4 py-2.5 text-muted-foreground text-xs">
+                                  {new Date(v.releasedAt).toLocaleDateString("de-DE")}
+                                </td>
+                                <td className="px-4 py-2.5">
+                                  <div className="flex gap-1 justify-end">
+                                    <Button
+                                      variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground"
+                                      title="Changelog bearbeiten"
+                                      onClick={() => setChangelogEditDialog({ id: v.id, text: v.changelog ?? "" })}
+                                    >
+                                      <Pencil className="h-3.5 w-3.5" />
                                     </Button>
-                                  )}
-                                  <Button variant="ghost" size="icon" className="h-7 w-7 hover:text-destructive" onClick={() => handleDeleteVersion(v.id)}>
-                                    <Trash2 className="h-3.5 w-3.5" />
-                                  </Button>
-                                </div>
-                              </td>
-                            </tr>
+                                    {v.changelog && (
+                                      <Button
+                                        variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground"
+                                        title="Changelog anzeigen/verbergen"
+                                        onClick={() => setExpandedChangelogs(prev => {
+                                          const next = new Set(prev);
+                                          next.has(v.id) ? next.delete(v.id) : next.add(v.id);
+                                          return next;
+                                        })}
+                                      >
+                                        <FileText className="h-3.5 w-3.5" />
+                                      </Button>
+                                    )}
+                                    {!v.isLatest && (
+                                      <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => handleSetLatest(v.id)}>
+                                        Als aktuell
+                                      </Button>
+                                    )}
+                                    <Button variant="ghost" size="icon" className="h-7 w-7 hover:text-destructive" onClick={() => handleDeleteVersion(v.id)}>
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </Button>
+                                  </div>
+                                </td>
+                              </tr>
+                              {v.changelog && expandedChangelogs.has(v.id) && (
+                                <tr key={`${v.id}-changelog`} className="bg-muted/20">
+                                  <td colSpan={4} className="px-4 py-2 text-xs text-muted-foreground whitespace-pre-wrap border-t border-dashed border-border/40">
+                                    {v.changelog}
+                                  </td>
+                                </tr>
+                              )}
+                            </>
                           ))}
                         </tbody>
                       </table>
@@ -973,6 +1267,36 @@ Start-Process "$env:TEMP\\HackITSentry-Setup.exe" -Verb RunAs -Wait`}</pre>
                       <Label htmlFor={`notify-${key}`} className="font-normal cursor-pointer">{label}</Label>
                     </div>
                   ))}
+                  <div className="pt-2 border-t border-border/50 mt-2">
+                    <Label className="text-sm font-medium">Offline-Alert Verzögerung</Label>
+                    <p className="text-xs text-muted-foreground mb-2">Minuten nach dem letzten Check-in abwarten, bevor eine Offline-Warnung gesendet wird.</p>
+                    <div className="flex items-center gap-3">
+                      <select
+                        value={notifyDefaults.offlineAlertDelayMinutes}
+                        onChange={e => setNotifyDefaults(d => ({ ...d, offlineAlertDelayMinutes: Number(e.target.value) }))}
+                        className="h-8 rounded-md border border-input bg-background px-2 text-sm"
+                      >
+                        {[0, 10, 30, 60, 120].map(m => (
+                          <option key={m} value={m}>{m === 0 ? "Sofort" : `${m} Minuten`}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                  <div className="pt-2 border-t border-border/50 mt-2">
+                    <Label className="text-sm font-medium">Antivirus Signatur-Alter Schwellwert</Label>
+                    <p className="text-xs text-muted-foreground mb-2">Alert senden, wenn Antivirus-Signaturen älter als X Tage sind (0 = deaktiviert).</p>
+                    <div className="flex items-center gap-3">
+                      <select
+                        value={notifyDefaults.avSignatureAgeAlertDays}
+                        onChange={e => setNotifyDefaults(d => ({ ...d, avSignatureAgeAlertDays: Number(e.target.value) }))}
+                        className="h-8 rounded-md border border-input bg-background px-2 text-sm"
+                      >
+                        {[0, 3, 7, 14, 30].map(d => (
+                          <option key={d} value={d}>{d === 0 ? "Deaktiviert" : `${d} Tage`}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
                   <div className="flex items-center gap-3 pt-2">
                     <Button onClick={handleSaveNotifyDefaults}>Speichern</Button>
                     <SaveFeedback msg={notifySaveMsg} />
@@ -1216,12 +1540,239 @@ Start-Process "$env:TEMP\\HackITSentry-Setup.exe" -Verb RunAs -Wait`}</pre>
                       Automatisch installieren — Agent installiert RustDesk, wenn noch nicht vorhanden
                     </Label>
                   </div>
-                  <div className="flex items-center gap-3 pt-1">
+
+                  <div className="flex items-center gap-3">
+                    <Button variant="outline" onClick={() => setRdOptionsOpen(true)}>
+                      <Settings2 className="h-4 w-4 mr-2" />
+                      Optionen konfigurieren
+                      {Object.keys(rustDesk.globalOptions ?? {}).length > 0 && (
+                        <span className="ml-2 text-xs bg-primary text-primary-foreground rounded-full px-1.5 py-0.5">
+                          {Object.keys(rustDesk.globalOptions ?? {}).length}
+                        </span>
+                      )}
+                    </Button>
+                    <p className="text-xs text-muted-foreground">
+                      Gilt für alle Geräte — gerätespezifisch überschreibbar.
+                      <code className="ml-1 bg-muted px-1 rounded text-xs">allow-remote-config-modification</code> wird immer gesetzt.
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-3 pt-1">
                     <Button onClick={handleSaveRustDesk} disabled={rustDeskLoading}>
                       {rustDeskLoading ? "Wird gespeichert..." : "Speichern"}
                     </Button>
                     <SaveFeedback msg={rustDeskSaveMsg} />
                   </div>
+
+                  <div className="rounded-md border border-border bg-muted/20 p-3 space-y-2">
+                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Auf Geräte anwenden</p>
+                    <div className="flex flex-wrap gap-2">
+                      <Button size="sm" variant="outline" onClick={handleForceApplyRustDesk} disabled={rdForceApplyLoading}>
+                        <RefreshCw className={cn("h-3.5 w-3.5 mr-1.5", rdForceApplyLoading && "animate-spin")} />
+                        {rdForceApplyLoading ? "Wird ausgelöst..." : "Alle Agents neu konfigurieren"}
+                      </Button>
+                      <Button size="sm" variant="outline" className="hover:text-destructive hover:border-destructive" onClick={handleClearDeviceOverrides} disabled={rdClearLoading}>
+                        <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+                        {rdClearLoading ? "Wird gelöscht..." : "Geräte-Overrides löschen"}
+                      </Button>
+                    </div>
+                    {rdForceApplyMsg && <p className="text-xs text-emerald-600 dark:text-emerald-400">{rdForceApplyMsg}</p>}
+                    {rdClearMsg && <p className="text-xs text-emerald-600 dark:text-emerald-400">{rdClearMsg}</p>}
+                    <p className="text-xs text-muted-foreground">
+                      <span className="font-medium text-foreground">Alle Agents neu konfigurieren</span> — Agents schreiben RustDesk-Config beim nächsten Check-in neu, auch wenn sich nichts geändert hat.
+                      {" "}<span className="font-medium text-foreground">Geräte-Overrides löschen</span> — entfernt alle gerätespezifischen Einstellungen, Geräte nutzen dann nur die globalen.
+                    </p>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <RustDeskOptionsDialog
+                open={rdOptionsOpen}
+                onOpenChange={setRdOptionsOpen}
+                mode="global"
+                options={rustDesk.globalOptions ?? {}}
+                onChange={(opts) => setRustDesk(r => ({ ...r, globalOptions: opts }))}
+                onSave={handleSaveRustDesk}
+                saving={rustDeskLoading}
+                saved={rustDeskSaveMsg?.ok === true}
+              />
+            </>
+          )}
+
+          {/* ── LDAP / Active Directory ───────────────────────────────── */}
+          {activeSection === "ldap" && isAdmin && (
+            <>
+              <h1 className="text-lg font-semibold">LDAP / Active Directory</h1>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <Users className="h-4 w-4" />
+                    LDAP-Authentifizierung
+                  </CardTitle>
+                  <CardDescription>
+                    Ermöglicht die Anmeldung mit Active Directory / LDAP-Konten. Lokale Accounts funktionieren weiterhin unabhängig davon.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-5">
+                  <div className="flex items-center gap-3">
+                    <input
+                      id="ldap-enabled"
+                      type="checkbox"
+                      className="h-4 w-4 rounded border-border"
+                      checked={ldap.enabled}
+                      onChange={e => setLdap(p => ({ ...p, enabled: e.target.checked }))}
+                    />
+                    <Label htmlFor="ldap-enabled" className="font-normal cursor-pointer">LDAP aktivieren</Label>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="space-y-1.5 col-span-2">
+                      <Label>Host / Server</Label>
+                      <Input value={ldap.host} onChange={e => setLdap(p => ({ ...p, host: e.target.value }))} placeholder="dc01.example.com" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Port</Label>
+                      <Input type="number" value={ldap.port} onChange={e => setLdap(p => ({ ...p, port: +e.target.value }))} placeholder="389" />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label>Transport</Label>
+                    <div className="flex gap-4">
+                      {(["TCP", "STARTTLS", "LDAPS"] as const).map(t => (
+                        <label key={t} className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="ldap-transport"
+                            value={t}
+                            checked={ldap.transport === t}
+                            onChange={() => setLdap(p => ({
+                              ...p,
+                              transport: t,
+                              port: p.port === 389 || p.port === 636
+                                ? (t === "LDAPS" ? 636 : 389)
+                                : p.port,
+                            }))}
+                            className="h-4 w-4"
+                          />
+                          <span className="text-sm">
+                            {t === "TCP" && "TCP (unverschlüsselt, Port 389)"}
+                            {t === "STARTTLS" && "STARTTLS (Port 389)"}
+                            {t === "LDAPS" && "LDAPS / SSL (Port 636)"}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                    {ldap.transport === "TCP" && (
+                      <p className="text-xs text-amber-600 dark:text-amber-400">Warnung: Anmeldedaten werden unverschlüsselt übertragen.</p>
+                    )}
+                  </div>
+
+                  {ldap.transport !== "TCP" && (
+                    <div className="flex items-center gap-3">
+                      <input
+                        id="ldap-ignore-cert"
+                        type="checkbox"
+                        className="h-4 w-4 rounded border-border"
+                        checked={ldap.ignoreCertificateErrors}
+                        onChange={e => setLdap(p => ({ ...p, ignoreCertificateErrors: e.target.checked }))}
+                      />
+                      <Label htmlFor="ldap-ignore-cert" className="font-normal cursor-pointer text-amber-600 dark:text-amber-400">
+                        Zertifikatsfehler ignorieren (selbstsignierte Zertifikate)
+                      </Label>
+                    </div>
+                  )}
+
+                  <div className="space-y-1.5">
+                    <Label>Base DN</Label>
+                    <Input value={ldap.baseDn} onChange={e => setLdap(p => ({ ...p, baseDn: e.target.value }))} placeholder="DC=example,DC=com" />
+                  </div>
+
+                  <div className="border-t border-border pt-4 space-y-3">
+                    <p className="text-sm font-medium">Service-Account (für Suche)</p>
+                    <div className="space-y-1.5">
+                      <Label>Bind DN <span className="text-xs text-muted-foreground">(leer = anonymer Bind)</span></Label>
+                      <Input value={ldap.bindDn} onChange={e => setLdap(p => ({ ...p, bindDn: e.target.value }))} placeholder="CN=svc-sentry,OU=Service,DC=example,DC=com" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>
+                        Bind-Passwort
+                        {ldap.hasBindPassword && <span className="ml-2 text-xs text-muted-foreground">(gesetzt — leer lassen zum Beibehalten)</span>}
+                      </Label>
+                      <Input
+                        type="password"
+                        value={ldapBindPassword}
+                        onChange={e => setLdapBindPassword(e.target.value)}
+                        placeholder={ldap.hasBindPassword ? "••••••••" : "Passwort"}
+                        autoComplete="new-password"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="border-t border-border pt-4 space-y-3">
+                    <p className="text-sm font-medium">Benutzersuche</p>
+                    <div className="space-y-1.5">
+                      <Label>User Search Base <span className="text-xs text-muted-foreground">(leer = Base DN)</span></Label>
+                      <Input value={ldap.userSearchBase} onChange={e => setLdap(p => ({ ...p, userSearchBase: e.target.value }))} placeholder="OU=Users,DC=example,DC=com" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>User Filter <span className="text-xs text-muted-foreground">({"{0}"} wird durch den Benutzernamen ersetzt)</span></Label>
+                      <Input value={ldap.userFilter} onChange={e => setLdap(p => ({ ...p, userFilter: e.target.value }))} placeholder="(&(objectClass=user)(|(sAMAccountName={0})(userPrincipalName={0})))" />
+                    </div>
+                  </div>
+
+                  <div className="border-t border-border pt-4 space-y-3">
+                    <p className="text-sm font-medium">Rollen-Mapping</p>
+                    <div className="space-y-1.5">
+                      <Label>Admin-Gruppe <span className="text-xs text-muted-foreground">(DN oder CN)</span></Label>
+                      <Input value={ldap.adminGroup} onChange={e => setLdap(p => ({ ...p, adminGroup: e.target.value }))} placeholder="CN=HackIT-Admins,OU=Groups,DC=example,DC=com" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Viewer-Gruppe <span className="text-xs text-muted-foreground">(leer = alle authentifizierten Benutzer sind Viewer)</span></Label>
+                      <Input value={ldap.viewerGroup} onChange={e => setLdap(p => ({ ...p, viewerGroup: e.target.value }))} placeholder="CN=HackIT-Users,OU=Groups,DC=example,DC=com" />
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <input
+                        id="ldap-require-group"
+                        type="checkbox"
+                        className="h-4 w-4 rounded border-border"
+                        checked={ldap.requireGroup}
+                        onChange={e => setLdap(p => ({ ...p, requireGroup: e.target.checked }))}
+                      />
+                      <Label htmlFor="ldap-require-group" className="font-normal cursor-pointer">
+                        Zugriff nur für Mitglieder der Admin- oder Viewer-Gruppe
+                      </Label>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <input
+                        id="ldap-nested-groups"
+                        type="checkbox"
+                        className="h-4 w-4 rounded border-border"
+                        checked={ldap.useNestedGroups}
+                        onChange={e => setLdap(p => ({ ...p, useNestedGroups: e.target.checked }))}
+                      />
+                      <Label htmlFor="ldap-nested-groups" className="font-normal cursor-pointer">
+                        Verschachtelte Gruppen berücksichtigen (Active Directory)
+                      </Label>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3 pt-1">
+                    <Button onClick={handleSaveLdap} disabled={ldapSaving}>
+                      {ldapSaving ? "Speichern..." : "Speichern"}
+                    </Button>
+                    <Button variant="outline" onClick={handleTestLdap} disabled={ldapTesting}>
+                      {ldapTesting ? "Teste..." : "Verbindung testen"}
+                    </Button>
+                  </div>
+                  <SaveFeedback msg={ldapSaveMsg} />
+                  {ldapTestMsg && (
+                    <div className={cn("flex items-center gap-2 text-sm", ldapTestMsg.ok ? "text-emerald-500" : "text-destructive")}>
+                      {ldapTestMsg.ok ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
+                      {ldapTestMsg.text}
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             </>
@@ -1254,14 +1805,22 @@ Start-Process "$env:TEMP\\HackITSentry-Setup.exe" -Verb RunAs -Wait`}</pre>
                         {userList.map(user => (
                           <tr key={user.id} className="border-t border-border/50">
                             <td className="px-4 py-2.5 font-medium">
-                              {user.username}
-                              {user.username === currentUsername && (
-                                <span className="ml-2 text-xs text-muted-foreground">(du)</span>
+                              <div className="flex items-center gap-2">
+                                {user.displayName || user.username}
+                                {user.username === currentUsername && (
+                                  <span className="text-xs text-muted-foreground">(du)</span>
+                                )}
+                                {!user.isLocal && (
+                                  <Badge variant="outline" className="text-[10px] px-1.5 py-0 font-normal">AD</Badge>
+                                )}
+                              </div>
+                              {user.displayName && (
+                                <div className="text-xs text-muted-foreground font-normal">{user.username}</div>
                               )}
                             </td>
                             <td className="px-4 py-2.5">
                               <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${user.role === "Admin" ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground"}`}>
-                                {user.role === "Admin" ? "Admin" : "Benutzer"}
+                                {user.role === "Admin" ? "Admin" : "Viewer"}
                               </span>
                             </td>
                             <td className="px-4 py-2.5 text-muted-foreground text-xs">
@@ -1269,9 +1828,11 @@ Start-Process "$env:TEMP\\HackITSentry-Setup.exe" -Verb RunAs -Wait`}</pre>
                             </td>
                             <td className="px-4 py-2.5">
                               <div className="flex gap-1 justify-end">
-                                <Button variant="ghost" size="icon" className="h-7 w-7" title="Passwort zurücksetzen" onClick={() => { setResetPw(""); setResetDialog(user); }}>
-                                  <RefreshCw className="h-3.5 w-3.5" />
-                                </Button>
+                                {user.isLocal && (
+                                  <Button variant="ghost" size="icon" className="h-7 w-7" title="Passwort zurücksetzen" onClick={() => { setResetPw(""); setResetDialog(user); }}>
+                                    <RefreshCw className="h-3.5 w-3.5" />
+                                  </Button>
+                                )}
                                 <Button variant="ghost" size="icon" className="h-7 w-7 hover:text-destructive" onClick={() => setDeleteConfirm(user)} disabled={user.username === currentUsername}>
                                   <Trash2 className="h-3.5 w-3.5" />
                                 </Button>
@@ -1284,6 +1845,180 @@ Start-Process "$env:TEMP\\HackITSentry-Setup.exe" -Verb RunAs -Wait`}</pre>
                   </div>
                 </CardContent>
               </Card>
+            </>
+          )}
+
+          {/* ── Script-Bibliothek ─────────────────────────────────────── */}
+          {activeSection === "scripts" && isAdmin && (
+            <>
+              <h1 className="text-lg font-semibold">Script-Bibliothek</h1>
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <CardTitle className="flex items-center gap-2 text-base">
+                        <Terminal className="h-4 w-4" />
+                        PowerShell-Scripts
+                      </CardTitle>
+                      <CardDescription>Wiederverwendbare Scripts für Remote-Ausführung auf Geräten.</CardDescription>
+                    </div>
+                    <Button size="sm" onClick={openNewScript}>
+                      <Plus className="h-3.5 w-3.5 mr-1.5" />
+                      Neu
+                    </Button>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  {scriptList.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">Noch keine Scripts vorhanden.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {scriptList.map(t => (
+                        <div key={t.id} className="flex items-start justify-between rounded-md border px-3 py-2.5 text-sm gap-3">
+                          <div className="flex-1 min-w-0">
+                            <div className="font-medium">{t.name}</div>
+                            {t.description && <div className="text-xs text-muted-foreground mt-0.5">{t.description}</div>}
+                            <div className="text-xs text-muted-foreground mt-0.5">von {t.createdBy}</div>
+                          </div>
+                          <div className="flex gap-1 shrink-0">
+                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEditScript(t)}>
+                              <Pencil className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button variant="ghost" size="icon" className="h-7 w-7 hover:text-destructive" onClick={() => handleDeleteScript(t.id)}>
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* Script create/edit dialog */}
+              {scriptDialog !== null && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setScriptDialog(null)}>
+                  <div className="bg-background border border-border rounded-lg p-6 w-full max-w-2xl space-y-4 shadow-xl" onClick={e => e.stopPropagation()}>
+                    <h2 className="text-base font-semibold">{scriptDialog === "new" ? "Neues Script" : "Script bearbeiten"}</h2>
+                    <div className="space-y-1.5">
+                      <Label>Name</Label>
+                      <Input value={scriptName} onChange={e => setScriptName(e.target.value)} placeholder="z.B. Disk-Cleanup" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Beschreibung (optional)</Label>
+                      <Input value={scriptDesc} onChange={e => setScriptDesc(e.target.value)} placeholder="Kurze Beschreibung..." />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>PowerShell-Script</Label>
+                      <textarea
+                        value={scriptBody}
+                        onChange={e => setScriptBody(e.target.value)}
+                        rows={12}
+                        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono resize-y"
+                        placeholder="# PowerShell script..."
+                      />
+                    </div>
+                    <div className="flex justify-end gap-2">
+                      <Button variant="outline" onClick={() => setScriptDialog(null)}>Abbrechen</Button>
+                      <Button onClick={handleSaveScript} disabled={scriptLoading || !scriptName.trim() || !scriptBody.trim()}>
+                        {scriptLoading ? "Speichern..." : "Speichern"}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* ── Software-Pakete ───────────────────────────────────────── */}
+          {activeSection === "packages" && (
+            <>
+              <div className="flex items-center justify-between">
+                <h1 className="text-lg font-semibold">Software-Pakete</h1>
+                {isAdmin && (
+                  <Button size="sm" onClick={openNewPackage}>
+                    <Plus className="h-3.5 w-3.5 mr-1.5" />
+                    Neues Paket
+                  </Button>
+                )}
+              </div>
+              <Card>
+                <CardContent className="pt-4 space-y-2">
+                  {packageList.length === 0 ? (
+                    <p className="text-sm text-muted-foreground py-4 text-center">Keine Pakete definiert.</p>
+                  ) : (
+                    packageList.map(p => (
+                      <div key={p.id} className="flex items-center justify-between rounded-md border border-border/60 px-3 py-2.5">
+                        <div className="min-w-0">
+                          <div className="font-medium text-sm">{p.name} {p.version && <span className="text-muted-foreground text-xs">v{p.version}</span>}</div>
+                          <div className="text-xs text-muted-foreground">{p.type} · {p.installCmd}</div>
+                          {p.description && <div className="text-xs text-muted-foreground mt-0.5 truncate">{p.description}</div>}
+                        </div>
+                        {isAdmin && (
+                          <div className="flex items-center gap-1 shrink-0 ml-3">
+                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEditPackage(p)}>
+                              <Pencil className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button variant="ghost" size="icon" className="h-7 w-7 hover:text-destructive" onClick={() => handleDeletePackage(p.id)}>
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </CardContent>
+              </Card>
+              {packageDialog !== null && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+                  <div className="bg-card rounded-lg border border-border shadow-xl p-5 w-full max-w-lg space-y-4">
+                    <h2 className="text-base font-semibold">{packageDialog === "new" ? "Neues Paket" : "Paket bearbeiten"}</h2>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1 col-span-2">
+                        <Label className="text-sm">Name *</Label>
+                        <Input value={pkgName} onChange={e => setPkgName(e.target.value)} placeholder="7-Zip" />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-sm">Version</Label>
+                        <Input value={pkgVersion} onChange={e => setPkgVersion(e.target.value)} placeholder="24.09" />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-sm">Typ</Label>
+                        <select value={pkgType} onChange={e => setPkgType(e.target.value)} className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
+                          <option value="winget">winget</option>
+                          <option value="script">PowerShell Script</option>
+                        </select>
+                      </div>
+                      <div className="space-y-1 col-span-2">
+                        <Label className="text-sm">Install-Befehl / Script *</Label>
+                        {pkgType === "script" ? (
+                          <textarea
+                            value={pkgInstallCmd}
+                            onChange={e => setPkgInstallCmd(e.target.value)}
+                            rows={4}
+                            placeholder="# PowerShell install script&#10;winget install -e --id 7zip.7zip"
+                            className="w-full min-h-[80px] rounded-md border border-input bg-background px-3 py-2 text-sm font-mono resize-y"
+                          />
+                        ) : (
+                          <Input value={pkgInstallCmd} onChange={e => setPkgInstallCmd(e.target.value)} placeholder="-e --id 7zip.7zip" />
+                        )}
+                      </div>
+                      <div className="space-y-1 col-span-2">
+                        <Label className="text-sm">Uninstall-Befehl (optional)</Label>
+                        <Input value={pkgUninstallCmd} onChange={e => setPkgUninstallCmd(e.target.value)} placeholder="-e --id 7zip.7zip" />
+                      </div>
+                      <div className="space-y-1 col-span-2">
+                        <Label className="text-sm">Beschreibung</Label>
+                        <Input value={pkgDesc} onChange={e => setPkgDesc(e.target.value)} placeholder="Kurze Beschreibung..." />
+                      </div>
+                    </div>
+                    <div className="flex justify-end gap-2 pt-1">
+                      <Button variant="outline" onClick={() => setPackageDialog(null)}>Abbrechen</Button>
+                      <Button onClick={handleSavePackage} disabled={!pkgName.trim() || !pkgInstallCmd.trim()}>Speichern</Button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </>
           )}
 
@@ -1502,6 +2237,29 @@ Start-Process "$env:TEMP\\HackITSentry-Setup.exe" -Verb RunAs -Wait`}</pre>
             <Button variant="outline" onClick={() => setVersionDialog(false)}>Abbrechen</Button>
             <Button onClick={handleAddVersion} disabled={verLoading || !verVersion.trim()}>
               {verLoading ? "Hinzufügen..." : "Hinzufügen"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Changelog-Edit-Dialog ─────────────────────────────────────────── */}
+      <Dialog open={!!changelogEditDialog} onOpenChange={open => { if (!open) setChangelogEditDialog(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Changelog bearbeiten</DialogTitle></DialogHeader>
+          <div className="space-y-1.5">
+            <Label>Changelog</Label>
+            <textarea
+              className="w-full min-h-[120px] rounded-md border border-input bg-background px-3 py-2 text-sm font-mono resize-y focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              placeholder={"- Neue Funktion\n- Bugfix"}
+              value={changelogEditDialog?.text ?? ""}
+              onChange={e => setChangelogEditDialog(prev => prev ? { ...prev, text: e.target.value } : null)}
+              autoFocus
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setChangelogEditDialog(null)} disabled={changelogEditLoading}>Abbrechen</Button>
+            <Button onClick={handleSaveChangelog} disabled={changelogEditLoading}>
+              {changelogEditLoading ? "Speichern..." : "Speichern"}
             </Button>
           </DialogFooter>
         </DialogContent>
