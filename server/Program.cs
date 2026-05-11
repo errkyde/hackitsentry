@@ -468,7 +468,7 @@ using (var scope = app.Services.CreateScope())
             ADD COLUMN IF NOT EXISTS "EventLogErrorsJson" text NOT NULL DEFAULT '[]'
         """);
     db.Database.ExecuteSqlRaw("""
-        ALTER TABLE "DeviceGroups"
+        ALTER TABLE "Groups"
             ADD COLUMN IF NOT EXISTS "NotificationSettingsJson" text NULL
         """);
 
