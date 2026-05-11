@@ -3,7 +3,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import {
   ArrowLeft, Cpu, Globe, HardDrive, Package, Key, Save, RefreshCw,
   Trash2, Activity, StickyNote, Terminal, Plus, Send, CheckCircle2, Monitor, Bell, BellOff, WifiOff,
-  ShieldCheck, ShieldAlert, ShieldOff, Download
+  ShieldCheck, ShieldAlert, ShieldOff, Download, Tag, ScrollText
 } from "lucide-react";
 import {
   devices, customers, groups, agentVersions, customFields, scriptTemplates,
@@ -62,6 +62,7 @@ const COMMAND_TYPES = [
   { value: "InitRustDesk", label: "RustDesk initialisieren" },
   { value: "InstallUpdates", label: "Windows Updates installieren" },
   { value: "ForceUpdate", label: "Agent-Update erzwingen" },
+  { value: "GetEventLogs", label: "Ereignisprotokoll abrufen" },
 ];
 
 const STATUS_COLORS: Record<string, string> = {
@@ -255,7 +256,7 @@ export function DeviceDetail() {
   const [location, setLocation] = useState("");
   const [serialNumber, setSerialNumber] = useState("");
   const [purchaseDate, setPurchaseDate] = useState("");
-  const [warrantyExpiry, setWarrantyExpiry] = useState("");
+  const [warrantyMonths, setWarrantyMonths] = useState("");
   const [assetSaving, setAssetSaving] = useState(false);
 
   // Notes state
@@ -272,6 +273,10 @@ export function DeviceDetail() {
   const [deploymentJobs, setDeploymentJobs] = useState<DeploymentJob[]>([]);
   const [deployingPackageId, setDeployingPackageId] = useState<string | null>(null);
   const [latestAgentDownloadUrl, setLatestAgentDownloadUrl] = useState("");
+
+  // Event log dialog
+  const [logDialogOpen, setLogDialogOpen] = useState(false);
+  const [logDialogContent, setLogDialogContent] = useState("");
 
   // License expiry state
   const [expiryInput, setExpiryInput] = useState("");
@@ -322,7 +327,15 @@ export function DeviceDetail() {
       setLocation(d.location ?? "");
       setSerialNumber(d.serialNumber ?? "");
       setPurchaseDate(d.purchaseDate ? new Date(d.purchaseDate).toISOString().split("T")[0] : "");
-      setWarrantyExpiry(d.warrantyExpiry ? new Date(d.warrantyExpiry).toISOString().split("T")[0] : "");
+      if (d.purchaseDate && d.warrantyExpiry) {
+        const months = Math.round(
+          (new Date(d.warrantyExpiry).getTime() - new Date(d.purchaseDate).getTime())
+          / (1000 * 60 * 60 * 24 * 30.44)
+        );
+        setWarrantyMonths(months > 0 ? String(months) : "");
+      } else {
+        setWarrantyMonths("");
+      }
       try { setRdOptions(d.rustDeskOptionsJson ? JSON.parse(d.rustDeskOptionsJson) : {}); } catch { setRdOptions({}); }
     }).catch(() => {}).finally(() => {
       setLoading(false);
@@ -390,14 +403,21 @@ export function DeviceDetail() {
     if (!id) return;
     setAssetSaving(true);
     try {
+      const computedExpiry = purchaseDate && warrantyMonths
+        ? (() => {
+            const d = new Date(purchaseDate);
+            d.setMonth(d.getMonth() + parseInt(warrantyMonths));
+            return d.toISOString().split("T")[0];
+          })()
+        : undefined;
       await devices.patch(id, {
         assetTag,
         location,
         serialNumber,
         purchaseDate: purchaseDate || undefined,
-        warrantyExpiry: warrantyExpiry || undefined,
+        warrantyExpiry: computedExpiry,
         clearPurchaseDate: !purchaseDate,
-        clearWarrantyExpiry: !warrantyExpiry,
+        clearWarrantyExpiry: !computedExpiry,
       });
       const updated = await devices.get(id);
       setDevice(updated);
@@ -765,6 +785,10 @@ export function DeviceDetail() {
             <TabsTrigger value="history" title="Verlauf">
               <Activity className="h-3.5 w-3.5 sm:mr-1.5 shrink-0" />
               <span className="hidden sm:inline">Verlauf</span>
+            </TabsTrigger>
+            <TabsTrigger value="asset" title="Asset">
+              <Tag className="h-3.5 w-3.5 sm:mr-1.5 shrink-0" />
+              <span className="hidden sm:inline">Asset</span>
             </TabsTrigger>
           </TabsList>
         </div>
@@ -1380,18 +1404,28 @@ export function DeviceDetail() {
                           </td>
                           <td className="px-3 py-2.5 text-xs text-muted-foreground max-w-[200px]">
                             {cmd.result
-                              ? (
-                                <Popover>
-                                  <PopoverTrigger asChild>
-                                    <button className="truncate block w-full text-left hover:text-foreground underline decoration-dotted underline-offset-2 cursor-pointer" title="Klicken für vollständigen Text">
-                                      {cmd.result}
-                                    </button>
-                                  </PopoverTrigger>
-                                  <PopoverContent align="end" className="w-96 max-h-64 overflow-y-auto">
-                                    <p className="text-xs whitespace-pre-wrap break-words">{cmd.result}</p>
-                                  </PopoverContent>
-                                </Popover>
-                              )
+                              ? cmd.commandType === "GetEventLogs"
+                                ? (
+                                  <button
+                                    className="flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+                                    onClick={() => { setLogDialogContent(cmd.result!); setLogDialogOpen(true); }}
+                                  >
+                                    <ScrollText className="h-3.5 w-3.5" />
+                                    Protokoll anzeigen
+                                  </button>
+                                )
+                                : (
+                                  <Popover>
+                                    <PopoverTrigger asChild>
+                                      <button className="truncate block w-full text-left hover:text-foreground underline decoration-dotted underline-offset-2 cursor-pointer" title="Klicken für vollständigen Text">
+                                        {cmd.result}
+                                      </button>
+                                    </PopoverTrigger>
+                                    <PopoverContent align="end" className="w-96 max-h-64 overflow-y-auto">
+                                      <p className="text-xs whitespace-pre-wrap break-words">{cmd.result}</p>
+                                    </PopoverContent>
+                                  </Popover>
+                                )
                               : (cmd.status === "Executed" ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" /> : "—")
                             }
                           </td>
@@ -1636,6 +1670,90 @@ export function DeviceDetail() {
             </Card>
           </div>
         </TabsContent>
+
+        {/* Asset */}
+        <TabsContent value="asset">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Asset-Verwaltung</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <Label>Asset-Tag</Label>
+                  <Input
+                    value={assetTag}
+                    onChange={e => setAssetTag(e.target.value)}
+                    placeholder="z.B. IT-00042"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Seriennummer</Label>
+                  <Input
+                    value={serialNumber}
+                    onChange={e => setSerialNumber(e.target.value)}
+                    placeholder="z.B. SN1234567890"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Standort</Label>
+                  <Input
+                    value={location}
+                    onChange={e => setLocation(e.target.value)}
+                    placeholder="z.B. Büro 2.OG, Arbeitsplatz 3"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Kaufdatum</Label>
+                  <Input
+                    type="date"
+                    value={purchaseDate}
+                    onChange={e => setPurchaseDate(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Herstellergarantie (Monate)</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    value={warrantyMonths}
+                    onChange={e => setWarrantyMonths(e.target.value)}
+                    placeholder="z.B. 24"
+                  />
+                </div>
+              </div>
+              {/* Warranty status */}
+              {purchaseDate && warrantyMonths && (() => {
+                const expiry = new Date(purchaseDate);
+                expiry.setMonth(expiry.getMonth() + parseInt(warrantyMonths));
+                const now = new Date();
+                const diffMs = expiry.getTime() - now.getTime();
+                const diffMonths = Math.round(diffMs / (1000 * 60 * 60 * 24 * 30.44));
+                const inWarranty = diffMs > 0;
+                return (
+                  <div className={cn(
+                    "flex items-center gap-2 rounded-md border px-4 py-3 text-sm font-medium",
+                    inWarranty
+                      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                      : "border-destructive/30 bg-destructive/10 text-destructive"
+                  )}>
+                    <div className={cn("h-2 w-2 rounded-full", inWarranty ? "bg-emerald-500" : "bg-destructive")} />
+                    {inWarranty
+                      ? `Innerhalb der Garantie — läuft ab am ${expiry.toLocaleDateString("de-DE")} (noch ${diffMonths} Monate)`
+                      : `Garantie abgelaufen am ${expiry.toLocaleDateString("de-DE")} (vor ${Math.abs(diffMonths)} Monaten)`
+                    }
+                  </div>
+                );
+              })()}
+              <div className="pt-2">
+                <Button onClick={handleSaveAsset} disabled={assetSaving}>
+                  <Save className="h-3.5 w-3.5 mr-1.5" />
+                  {assetSaving ? "Speichern..." : "Speichern"}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
       </Tabs>
 
       {/* Remove device from Sentry dialog */}
@@ -1682,6 +1800,39 @@ export function DeviceDetail() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Event Log Dialog */}
+      <Dialog open={logDialogOpen} onOpenChange={setLogDialogOpen}>
+        <DialogContent className="max-w-4xl w-full">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ScrollText className="h-4 w-4" />
+              Windows Ereignisprotokoll
+            </DialogTitle>
+          </DialogHeader>
+          <div className="bg-zinc-950 rounded-md p-4 max-h-[60vh] overflow-y-auto font-mono text-xs leading-5">
+            {logDialogContent.split("\n").map((line, i) => {
+              const isError = /\[(ERROR|KRIT )\]/.test(line);
+              const isWarn = /\[WARN \]/.test(line);
+              const isInfo = /\[INFO \]/.test(line);
+              return (
+                <div key={i} className={cn(
+                  isError ? "text-red-400" :
+                  isWarn  ? "text-amber-400" :
+                  isInfo  ? "text-zinc-300" :
+                            "text-zinc-500"
+                )}>
+                  {line || " "}
+                </div>
+              );
+            })}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setLogDialogOpen(false)}>Schließen</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
     </div>
   );
 }

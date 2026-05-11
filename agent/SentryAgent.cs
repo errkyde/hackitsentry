@@ -623,6 +623,54 @@ public class SentryAgent : BackgroundService
                     return (true, $"Server URL updated to {newUrl}. Restarting...");
                 }
 
+                case "GetEventLogs":
+                {
+                    var count = int.TryParse(cmd.Parameters, out var n) ? Math.Clamp(n, 10, 500) : 100;
+                    var ps = $@"
+$count = {count}
+$results = @()
+try {{
+    $results += Get-WinEvent -FilterHashtable @{{LogName='Application'}} -MaxEvents 5000 -ErrorAction Stop |
+        Where-Object {{ $_.ProviderName -match 'HackIT|HackITSentry' }} |
+        Select-Object -First $count
+}} catch {{ }}
+try {{
+    $results += Get-WinEvent -FilterHashtable @{{LogName='System'; ProviderName='Service Control Manager'}} -MaxEvents 2000 -ErrorAction Stop |
+        Where-Object {{ $_.Message -match 'HackITSentryAgent' }} |
+        Select-Object -First 30
+}} catch {{ }}
+if ($results.Count -eq 0) {{
+    'Keine Eintraege fuer HackIT Sentry Agent gefunden.'
+    exit
+}}
+$results | Sort-Object TimeCreated -Descending | ForEach-Object {{
+    $level = switch ($_.Level) {{ 1{{'KRIT '}} 2{{'ERROR'}} 3{{'WARN '}} 4{{'INFO '}} 5{{'DEBUG'}} default{{""L$($_.Level)""}} }}
+    $time = $_.TimeCreated.ToString('dd.MM.yyyy HH:mm:ss')
+    $msg = ($_.Message -split ""`n"")[0].Trim() -replace ""`r"",''''
+    ""[$time] [$level] $msg""
+}}".Trim();
+                    var tempFile = Path.Combine(Path.GetTempPath(), $"sentry_evtlog_{Guid.NewGuid():N}.ps1");
+                    await File.WriteAllTextAsync(tempFile, ps);
+                    var psi = new ProcessStartInfo("powershell.exe",
+                        $"-NonInteractive -ExecutionPolicy Bypass -File \"{tempFile}\"")
+                    {
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    };
+                    using var proc = Process.Start(psi);
+                    if (proc == null) { File.Delete(tempFile); return (false, "PowerShell konnte nicht gestartet werden"); }
+                    var output = await proc.StandardOutput.ReadToEndAsync();
+                    var error = await proc.StandardError.ReadToEndAsync();
+                    await proc.WaitForExitAsync();
+                    File.Delete(tempFile);
+                    var result = output.Trim();
+                    if (string.IsNullOrEmpty(result))
+                        result = string.IsNullOrEmpty(error) ? "Keine Eintraege gefunden." : $"Fehler: {error.Trim()}";
+                    return (true, result);
+                }
+
                 default:
                     return (false, $"Unknown command type: {cmd.CommandType}");
             }

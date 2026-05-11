@@ -10,7 +10,10 @@ public enum CommandType
     UpdateServerUrl,
     CollectLicense,
     InitRustDesk,
-    ForceUpdate
+    ForceUpdate,
+    InstallUpdates,
+    DeployPackage,
+    GetEventLogs
 }
 
 public enum CommandStatus
@@ -31,6 +34,7 @@ public class DeviceCommand
     public CommandStatus Status { get; set; } = CommandStatus.Pending;
     public string IssuedByUsername { get; set; } = "";
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? ScheduledFor { get; set; }
     public DateTime? ExecutedAt { get; set; }
     public string? Result { get; set; }
 }
