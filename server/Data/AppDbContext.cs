@@ -27,6 +27,9 @@ public class AppDbContext : DbContext
     public DbSet<CustomFieldDefinition> CustomFieldDefinitions { get; set; }
     public DbSet<CustomFieldValue> CustomFieldValues { get; set; }
     public DbSet<DeployKey> DeployKeys { get; set; }
+    public DbSet<ScriptTemplate> ScriptTemplates { get; set; }
+    public DbSet<SoftwarePackage> SoftwarePackages { get; set; }
+    public DbSet<DeploymentJob> DeploymentJobs { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -128,5 +131,42 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<DeployKey>()
             .HasIndex(k => k.Key)
             .IsUnique();
+
+        // Indexes on FK columns used in every device-detail query
+        modelBuilder.Entity<DeviceCheckin>()
+            .HasIndex(c => c.DeviceId);
+
+        modelBuilder.Entity<InstalledSoftware>()
+            .HasIndex(s => s.DeviceId);
+
+        modelBuilder.Entity<DeviceNote>()
+            .HasIndex(n => n.DeviceId);
+
+        modelBuilder.Entity<DeviceCommand>()
+            .HasIndex(c => new { c.DeviceId, c.Status });
+
+        modelBuilder.Entity<SoftwareAlert>()
+            .HasIndex(a => new { a.DeviceId, a.AcknowledgedAt });
+
+        modelBuilder.Entity<AuditLog>()
+            .HasIndex(l => l.Timestamp);
+
+        modelBuilder.Entity<InstallToken>()
+            .HasIndex(t => t.ExpiresAt);
+
+        modelBuilder.Entity<DeploymentJob>()
+            .HasOne(j => j.Package)
+            .WithMany()
+            .HasForeignKey(j => j.PackageId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<DeploymentJob>()
+            .HasOne(j => j.Device)
+            .WithMany()
+            .HasForeignKey(j => j.DeviceId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<DeploymentJob>()
+            .HasIndex(j => new { j.DeviceId, j.Status });
     }
 }

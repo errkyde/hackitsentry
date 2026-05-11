@@ -8,6 +8,8 @@
     --foreground: 222 47% 11%;
     --card: 0 0% 100%;
     --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
     --border: 216 20% 86%;
     --input: 216 20% 90%;
     --ring: 212 100% 45%;
@@ -29,6 +31,8 @@
     --foreground: 213 31% 91%;
     --card: 222 47% 13%;
     --card-foreground: 213 31% 91%;
+    --popover: 222 47% 13%;
+    --popover-foreground: 213 31% 91%;
     --border: 216 34% 22%;
     --input: 216 34% 20%;
     --ring: 212 100% 60%;

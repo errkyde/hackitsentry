@@ -73,16 +73,27 @@ export function Groups() {
     setDialog({ mode: "edit", group });
   };
 
-  const handleSave = async () => {
+  const handleSave = async (andSync = false) => {
     setSaving(true);
     try {
+      let savedGroupId: string | undefined;
       if (dialog?.mode === "create") {
-        await groups.create(form);
+        const res = await groups.create(form);
+        savedGroupId = res.id;
       } else if (dialog?.group) {
         await groups.update(dialog.group.id, form);
+        savedGroupId = dialog.group.id;
+      }
+      if (andSync && savedGroupId) {
+        const result = await groups.syncRustDesk(savedGroupId, null);
+        toast({ title: "RustDesk synchronisiert", description: `${result.updated} Gerät${result.updated !== 1 ? "e" : ""} aktualisiert.` });
+      } else {
+        toast({ title: "Gespeichert", description: `Gruppe „${form.name}" wurde gespeichert.` });
       }
       setDialog(null);
       await fetchGroups();
+    } catch {
+      toast({ title: "Fehler", description: "Speichern fehlgeschlagen.", variant: "warning" });
     } finally {
       setSaving(false);
     }
@@ -117,7 +128,20 @@ export function Groups() {
   };
 
   const openNotif = (group: Group) => {
-    setNotif(DEFAULT_NOTIF);
+    let loaded = DEFAULT_NOTIF;
+    if (group.notificationSettingsJson) {
+      try {
+        const parsed = JSON.parse(group.notificationSettingsJson);
+        loaded = {
+          alertOnOffline: parsed.alertOnOffline ?? parsed.AlertOnOffline ?? DEFAULT_NOTIF.alertOnOffline,
+          alertOnOnline: parsed.alertOnOnline ?? parsed.AlertOnOnline ?? DEFAULT_NOTIF.alertOnOnline,
+          alertOnSoftwareAlert: parsed.alertOnSoftwareAlert ?? parsed.AlertOnSoftwareAlert ?? DEFAULT_NOTIF.alertOnSoftwareAlert,
+          alertOnDiskFull: parsed.alertOnDiskFull ?? parsed.AlertOnDiskFull ?? DEFAULT_NOTIF.alertOnDiskFull,
+          offlineAlertDelayMinutes: parsed.offlineAlertDelayMinutes ?? parsed.OfflineAlertDelayMinutes ?? null,
+        };
+      } catch { /* ignore */ }
+    }
+    setNotif(loaded);
     setNotifGroup(group);
   };
 
@@ -211,9 +235,30 @@ export function Groups() {
                 {group.description && (
                   <p className="text-sm text-muted-foreground mb-3">{group.description}</p>
                 )}
-                <p className="text-xs text-muted-foreground mb-3">
+                <p className="text-xs text-muted-foreground mb-2">
                   {group.deviceCount} Gerät{group.deviceCount !== 1 ? "e" : ""}
                 </p>
+                {group.notificationSettingsJson && (() => {
+                  try {
+                    const s = JSON.parse(group.notificationSettingsJson);
+                    const active = [
+                      (s.alertOnOffline ?? s.AlertOnOffline) === true && "Offline",
+                      (s.alertOnOnline ?? s.AlertOnOnline) === true && "Online",
+                      (s.alertOnSoftwareAlert ?? s.AlertOnSoftwareAlert) === true && "Software",
+                      (s.alertOnDiskFull ?? s.AlertOnDiskFull) === true && "Disk",
+                    ].filter(Boolean) as string[];
+                    if (active.length === 0) return null;
+                    return (
+                      <div className="flex gap-1 flex-wrap mb-3">
+                        {active.map(label => (
+                          <span key={label} className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 font-medium">
+                            {label}
+                          </span>
+                        ))}
+                      </div>
+                    );
+                  } catch { return null; }
+                })()}
                 <div className="flex gap-2 flex-wrap">
                   <Button
                     variant="outline"
@@ -282,7 +327,13 @@ export function Groups() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDialog(null)}>Abbrechen</Button>
-            <Button onClick={handleSave} disabled={saving || !form.name.trim()}>
+            {dialog?.mode === "edit" && (
+              <Button variant="outline" onClick={() => handleSave(true)} disabled={saving || !form.name.trim()}>
+                <Monitor className="h-3.5 w-3.5 mr-1.5" />
+                {saving ? "..." : "Speichern & Sync"}
+              </Button>
+            )}
+            <Button onClick={() => handleSave(false)} disabled={saving || !form.name.trim()}>
               {saving ? "Speichern..." : "Speichern"}
             </Button>
           </DialogFooter>

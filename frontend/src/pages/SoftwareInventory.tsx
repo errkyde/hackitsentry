@@ -16,7 +16,7 @@ export function SoftwareInventory() {
 
   useEffect(() => {
     devices.list().then(d => {
-      setDeviceList(d);
+      setDeviceList(d.items);
       setLoadingDevices(false);
     }).catch(() => setLoadingDevices(false));
   }, []);

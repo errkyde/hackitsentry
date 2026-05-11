@@ -1,8 +1,8 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
-  Search, ChevronRight, RefreshCw, Monitor, Wifi, WifiOff, Clock,
-  Download, Trash2, Users, Layers, X, Link, MonitorCheck
+  Search, ChevronRight, ChevronLeft, RefreshCw, Monitor, Wifi, WifiOff, Clock,
+  Download, Trash2, Users, Layers, X, Link, MonitorCheck, ShieldCheck, ShieldAlert, Send
 } from "lucide-react";
 import {
   devices, customers, groups,
@@ -15,6 +15,44 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+
+function defenderStatus(json: string): "ok" | "warn" | "unknown" {
+  try {
+    const d = JSON.parse(json);
+    if (!d || (!d.avProducts?.length && d.realTimeProtectionEnabled == null)) return "unknown";
+    if (d.realTimeProtectionEnabled === false) return "warn";
+    if (typeof d.signatureAgeDays === "number" && d.signatureAgeDays > 7) return "warn";
+    if (d.avProducts?.some((p: { enabled: boolean; upToDate: boolean }) => !p.enabled || !p.upToDate)) return "warn";
+    return "ok";
+  } catch { return "unknown"; }
+}
+
+function SecurityBadge({ json }: { json: string }) {
+  const status = defenderStatus(json);
+  if (status === "unknown") return null;
+  if (status === "warn") return (
+    <span title="Sicherheitsproblem erkannt">
+      <ShieldAlert className="h-3.5 w-3.5 text-rose-500 shrink-0" />
+    </span>
+  );
+  return (
+    <span title="Antivirus OK">
+      <ShieldCheck className="h-3.5 w-3.5 text-emerald-500 shrink-0" />
+    </span>
+  );
+}
+
+function UpdatesBadge({ count }: { count: number }) {
+  if (count <= 0) return null;
+  return (
+    <span
+      title={`${count} ausstehende Windows-Updates`}
+      className="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-semibold bg-amber-500/15 text-amber-600 dark:text-amber-400 ring-1 ring-amber-500/30 shrink-0"
+    >
+      <Download className="h-2.5 w-2.5" />{count}
+    </span>
+  );
+}
 
 function StatusBadge({ online }: { online: boolean }) {
   return (
@@ -40,9 +78,13 @@ export function Devices() {
   const [groupList, setGroupList] = useState<Group[]>([]);
   const [loading, setLoading] = useState(true);
   const [stats, setStats] = useState({ total: 0, online: 0, offline: 0, pending: 0 });
+  const [page, setPage] = useState(1);
+  const [totalDevices, setTotalDevices] = useState(0);
+  const currentPageRef = useRef(1);
 
   // Filters
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState(searchParams.get("status") ?? "all");
   const [groupFilter, setGroupFilter] = useState("all");
   const [customerFilter, setCustomerFilter] = useState("all");
@@ -56,6 +98,20 @@ export function Devices() {
   const [bulkDeleteDialog, setBulkDeleteDialog] = useState(false);
   const [bulkLoading, setBulkLoading] = useState(false);
   const [installDialog, setInstallDialog] = useState(false);
+  const [bulkCmdDialog, setBulkCmdDialog] = useState(false);
+  const [bulkCmdType, setBulkCmdType] = useState("Restart");
+  const [bulkCmdParams, setBulkCmdParams] = useState("");
+
+  // Debounce search input by 400 ms to avoid a request per keystroke
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 400);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  // Keep ref current so the silent interval always refreshes the visible page
+  useEffect(() => { currentPageRef.current = page; }, [page]);
+
+  const PAGE_SIZE = 100;
 
   const RAM_RANGES: Record<string, { minRam?: number; maxRam?: number }> = {
     "lt4":   { maxRam: 3.9 },
@@ -65,9 +121,12 @@ export function Devices() {
     "gt32":  { minRam: 32.1 },
   };
 
-  const fetchDevices = useCallback(async () => {
-    const params: Record<string, string> = {};
-    if (search) params.search = search;
+  const fetchDevices = useCallback(async (p: number, silent = false) => {
+    const params: Record<string, string> = {
+      page: String(p),
+      pageSize: String(PAGE_SIZE),
+    };
+    if (debouncedSearch) params.search = debouncedSearch;
     if (groupFilter !== "all") params.groupId = groupFilter;
     if (customerFilter !== "all") params.customerId = customerFilter;
     if (statusFilter !== "all") params.status = statusFilter;
@@ -78,20 +137,37 @@ export function Devices() {
       if (range?.maxRam) params.maxRam = String(range.maxRam);
     }
 
-    const data = await devices.list(params);
-    setDeviceList(data);
-    setSelected(new Set());
-  }, [search, groupFilter, customerFilter, statusFilter, osFilter, ramFilter]);
+    const [data, s] = await Promise.all([devices.list(params), devices.getStats()]);
+    setDeviceList(data.items);
+    setTotalDevices(data.total);
+    setPage(data.page);
+    setStats(s);
+    if (!silent) setSelected(new Set());
+  }, [debouncedSearch, groupFilter, customerFilter, statusFilter, osFilter, ramFilter]);
+
+  const loadPage = useCallback((p: number) => {
+    setLoading(true);
+    fetchDevices(p).finally(() => setLoading(false));
+  }, [fetchDevices]);
 
   useEffect(() => {
-    Promise.all([customers.list(), groups.list(), devices.getStats()])
-      .then(([c, g, s]) => { setCustomerList(c); setGroupList(g); setStats(s); });
+    Promise.all([customers.list(), groups.list()])
+      .then(([c, g]) => { setCustomerList(c); setGroupList(g); });
   }, []);
 
+  // Filter change → reset subtitle immediately and reload from page 1
   useEffect(() => {
-    setLoading(true);
-    fetchDevices().finally(() => setLoading(false));
+    setPage(1);
+    loadPage(1);
+  }, [loadPage]);
+
+  // Silent auto-refresh every 60 s, stays on whichever page the user is viewing
+  useEffect(() => {
+    const id = setInterval(() => fetchDevices(currentPageRef.current, true), 60_000);
+    return () => clearInterval(id);
   }, [fetchDevices]);
+
+  const goToPage = (p: number) => loadPage(p);
 
   const exportCsv = () => {
     const headers = ["Hostname", "Beschreibung", "Status", "Windows", "CPU", "RAM (GB)", "Kunde", "Gruppe", "Letzter Check-in"];
@@ -154,7 +230,19 @@ export function Devices() {
     setBulkAssignValue("none");
     setBulkLoading(false);
     setSelected(new Set());
-    fetchDevices();
+    loadPage(page);
+  };
+
+  const handleBulkCommand = async () => {
+    setBulkLoading(true);
+    await devices.bulkCommand({
+      deviceIds: Array.from(selected),
+      commandType: bulkCmdType,
+      parameters: bulkCmdParams || undefined,
+    }).catch(() => {});
+    setBulkCmdDialog(false);
+    setBulkCmdParams("");
+    setBulkLoading(false);
   };
 
   const handleBulkDelete = async () => {
@@ -163,31 +251,33 @@ export function Devices() {
     setBulkDeleteDialog(false);
     setBulkLoading(false);
     setSelected(new Set());
-    fetchDevices();
+    loadPage(page);
   };
 
   return (
-    <div className="p-6 space-y-5">
+    <div className="p-4 sm:p-6 space-y-4 sm:space-y-5">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold">Geräte</h1>
           <p className="text-sm text-muted-foreground">
-            {deviceList.length} Gerät{deviceList.length !== 1 ? "e" : ""} gefunden
+            {totalDevices > 0
+              ? `${(page - 1) * PAGE_SIZE + 1}–${Math.min(page * PAGE_SIZE, totalDevices)} von ${totalDevices} Gerät${totalDevices !== 1 ? "en" : ""}`
+              : "Keine Geräte gefunden"}
           </p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={() => setInstallDialog(true)}>
-            <Link className="h-3.5 w-3.5 mr-1.5" />
-            Gerät hinzufügen
+            <Link className="h-3.5 w-3.5 sm:mr-1.5" />
+            <span className="hidden sm:inline">Gerät hinzufügen</span>
           </Button>
           <Button variant="outline" size="sm" onClick={exportCsv} disabled={deviceList.length === 0}>
-            <Download className="h-3.5 w-3.5 mr-1.5" />
-            CSV
+            <Download className="h-3.5 w-3.5 sm:mr-1.5" />
+            <span className="hidden sm:inline">CSV</span>
           </Button>
-          <Button variant="outline" size="sm" onClick={() => fetchDevices()}>
-            <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
-            Aktualisieren
+          <Button variant="outline" size="sm" onClick={() => loadPage(page)}>
+            <RefreshCw className={cn("h-3.5 w-3.5 sm:mr-1.5", loading && "animate-spin")} />
+            <span className="hidden sm:inline">Aktualisieren</span>
           </Button>
         </div>
       </div>
@@ -294,6 +384,10 @@ export function Devices() {
             <Layers className="h-3.5 w-3.5 mr-1.5" />
             Gruppe zuweisen
           </Button>
+          <Button variant="outline" size="sm" onClick={() => { setBulkCmdType("Restart"); setBulkCmdParams(""); setBulkCmdDialog(true); }}>
+            <Send className="h-3.5 w-3.5 mr-1.5" />
+            Befehl senden
+          </Button>
           <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => setBulkDeleteDialog(true)}>
             <Trash2 className="h-3.5 w-3.5 mr-1.5" />
             Löschen
@@ -305,8 +399,8 @@ export function Devices() {
         </div>
       )}
 
-      {/* Table */}
-      <div className="rounded-lg border border-border overflow-hidden">
+      {/* Desktop Table */}
+      <div className="hidden md:block rounded-lg border border-border overflow-hidden">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border bg-muted/30">
@@ -364,6 +458,8 @@ export function Devices() {
                       {device.rustDeskId && (
                         <span title={`RustDesk: ${device.rustDeskId}`}><MonitorCheck className="h-3.5 w-3.5 text-blue-500 shrink-0" /></span>
                       )}
+                      <SecurityBadge json={device.defenderStatusJson} />
+                      <UpdatesBadge count={device.pendingUpdatesCount} />
                     </div>
                     {device.description && (
                       <div className="text-xs text-muted-foreground">{device.description}</div>
@@ -408,6 +504,123 @@ export function Devices() {
           </tbody>
         </table>
       </div>
+
+      {/* Mobile Card List */}
+      <div className="md:hidden space-y-2">
+        {loading ? (
+          <div className="py-12 text-center text-muted-foreground text-sm">Laden...</div>
+        ) : deviceList.length === 0 ? (
+          <div className="py-12 text-center text-muted-foreground text-sm">Keine Geräte gefunden</div>
+        ) : (
+          deviceList.map((device) => (
+            <div
+              key={device.id}
+              className={cn(
+                "rounded-lg border border-border bg-card p-3.5 cursor-pointer active:bg-accent/50 transition-colors",
+                selected.has(device.id) && "border-primary/40 bg-primary/5"
+              )}
+              onClick={() => navigate(`/devices/${device.id}`)}
+            >
+              <div className="flex items-start gap-3">
+                <div
+                  className="mt-0.5 shrink-0"
+                  onClick={(e) => toggleSelect(device.id, e)}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selected.has(device.id)}
+                    onChange={() => {}}
+                    className="h-4 w-4 rounded border-border cursor-pointer"
+                  />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="font-medium text-sm truncate">{device.hostname}</span>
+                      {device.rustDeskId && (
+                        <MonitorCheck className="h-3.5 w-3.5 text-blue-500 shrink-0" />
+                      )}
+                      <SecurityBadge json={device.defenderStatusJson} />
+                      <UpdatesBadge count={device.pendingUpdatesCount} />
+                    </div>
+                    <StatusBadge online={device.isOnline} />
+                  </div>
+                  {device.description && (
+                    <div className="text-xs text-muted-foreground mb-1.5 truncate">{device.description}</div>
+                  )}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {device.customer && (
+                      <span className="text-xs text-muted-foreground">{device.customer.name}</span>
+                    )}
+                    {device.group && (
+                      <Badge
+                        variant="outline"
+                        className="text-xs h-4 px-1.5"
+                        style={device.group.color ? {
+                          borderColor: device.group.color + "60",
+                          color: device.group.color,
+                          backgroundColor: device.group.color + "15"
+                        } : {}}
+                      >
+                        {device.group.name}
+                      </Badge>
+                    )}
+                    <span className="text-xs text-muted-foreground ml-auto">
+                      {formatLastSeen(device.lastSeenAt)}
+                    </span>
+                  </div>
+                </div>
+                <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+
+      {/* Pagination */}
+      {totalDevices > PAGE_SIZE && (
+        <div className="flex items-center justify-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => goToPage(page - 1)}
+            disabled={page <= 1 || loading}
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </Button>
+          {Array.from({ length: Math.ceil(totalDevices / PAGE_SIZE) }, (_, i) => i + 1)
+            .filter(p => p === 1 || p === Math.ceil(totalDevices / PAGE_SIZE) || Math.abs(p - page) <= 2)
+            .reduce<(number | "…")[]>((acc, p, i, arr) => {
+              if (i > 0 && p - (arr[i - 1] as number) > 1) acc.push("…");
+              acc.push(p);
+              return acc;
+            }, [])
+            .map((p, i) =>
+              p === "…" ? (
+                <span key={`ellipsis-${i}`} className="px-1 text-muted-foreground text-sm">…</span>
+              ) : (
+                <Button
+                  key={p}
+                  variant={p === page ? "default" : "outline"}
+                  size="sm"
+                  className="w-9"
+                  onClick={() => goToPage(p as number)}
+                  disabled={loading}
+                >
+                  {p}
+                </Button>
+              )
+            )}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => goToPage(page + 1)}
+            disabled={page >= Math.ceil(totalDevices / PAGE_SIZE) || loading}
+          >
+            <ChevronRight className="h-4 w-4" />
+          </Button>
+        </div>
+      )}
 
       {/* Bulk assign dialog */}
       <Dialog open={!!bulkAssignDialog} onOpenChange={open => !open && setBulkAssignDialog(null)}>
@@ -466,6 +679,58 @@ export function Devices() {
             <Button variant="outline" onClick={() => setBulkDeleteDialog(false)}>Abbrechen</Button>
             <Button variant="destructive" onClick={handleBulkDelete} disabled={bulkLoading}>
               {bulkLoading ? "Wird gelöscht..." : "Löschen"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk command dialog */}
+      <Dialog open={bulkCmdDialog} onOpenChange={open => { if (!open) setBulkCmdDialog(false); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader><DialogTitle>Befehl an {selected.size} Gerät{selected.size !== 1 ? "e" : ""} senden</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">Befehlstyp</label>
+              <Select value={bulkCmdType} onValueChange={setBulkCmdType}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Restart">Neustart</SelectItem>
+                  <SelectItem value="Shutdown">Herunterfahren</SelectItem>
+                  <SelectItem value="RunScript">Script ausführen</SelectItem>
+                  <SelectItem value="ForceCheckin">Sofort einchecken</SelectItem>
+                  <SelectItem value="CollectLicense">Lizenzen sammeln</SelectItem>
+                  <SelectItem value="InstallUpdates">Windows Updates installieren</SelectItem>
+                  <SelectItem value="ForceUpdate">Agent-Update erzwingen</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {(bulkCmdType === "RunScript" || bulkCmdType === "UpdateServerUrl" || bulkCmdType === "ForceUpdate") && (
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">
+                  {bulkCmdType === "RunScript" ? "Script (PowerShell)" : "Parameter"}
+                </label>
+                {bulkCmdType === "RunScript" ? (
+                  <textarea
+                    value={bulkCmdParams}
+                    onChange={e => setBulkCmdParams(e.target.value)}
+                    rows={5}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono resize-y"
+                    placeholder="# PowerShell..."
+                  />
+                ) : (
+                  <input
+                    value={bulkCmdParams}
+                    onChange={e => setBulkCmdParams(e.target.value)}
+                    className="w-full h-8 rounded-md border border-input bg-background px-3 text-sm"
+                  />
+                )}
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBulkCmdDialog(false)}>Abbrechen</Button>
+            <Button onClick={handleBulkCommand} disabled={bulkLoading}>
+              {bulkLoading ? "Wird gesendet..." : "Senden"}
             </Button>
           </DialogFooter>
         </DialogContent>

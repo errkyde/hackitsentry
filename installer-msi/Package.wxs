@@ -8,10 +8,13 @@
            Manufacturer="HackIT"
            UpgradeCode="A7F34C2E-8B91-4D56-9E32-1A5C8F720E3D">
 
-    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="x64" />
+    <Package InstallerVersion="200" Compressed="yes" InstallScope="perMachine" Platform="x64" />
 
     <MajorUpgrade DowngradeErrorMessage="Eine neuere Version von HackIT Sentry Agent ist bereits installiert." />
     <MediaTemplate EmbedCab="yes" />
+
+    <!-- Hide from Programs & Features / Add-Remove-Programs -->
+    <Property Id="ARPSYSTEMCOMPONENT" Value="1" />
 
     <!-- Properties set via msiexec: SERVERURL="..." DEPLOYKEY="..." -->
     <Property Id="SERVERURL" Secure="yes" />

@@ -37,8 +37,13 @@ public class DevicesController : ControllerBase
         [FromQuery] string? status,
         [FromQuery] string? os,
         [FromQuery] double? minRam,
-        [FromQuery] double? maxRam)
+        [FromQuery] double? maxRam,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 100)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 500);
+
         var onlineThreshold = DateTime.UtcNow.AddMinutes(-(_runtimeSettings.CheckinIntervalMinutes * 2 + 5));
 
         var query = _db.Devices
@@ -73,9 +78,20 @@ public class DevicesController : ControllerBase
                 query = query.Where(d => d.LastSeenAt == null || d.LastSeenAt <= onlineThreshold);
         }
 
-        var devices = await query.OrderBy(d => d.Hostname).ToListAsync();
+        var total = await query.CountAsync();
+        var devices = await query
+            .OrderBy(d => d.Hostname)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToListAsync();
 
-        return Ok(devices.Select(d => MapToListDto(d, onlineThreshold)));
+        return Ok(new
+        {
+            total,
+            page,
+            pageSize,
+            items = devices.Select(d => MapToListDto(d, onlineThreshold))
+        });
     }
 
     // GET /api/devices/stats
@@ -106,7 +122,9 @@ public class DevicesController : ControllerBase
             p.CpuModel,
             p.RamTotalGB,
             p.RequestedAt,
-            p.Status
+            p.Status,
+            p.InvitedByUsername,
+            p.DeployKeyName,
         }));
     }
 
@@ -144,22 +162,32 @@ public class DevicesController : ControllerBase
         var since = DateTime.UtcNow.AddDays(-days);
         var thresholdMinutes = _runtimeSettings.CheckinIntervalMinutes * 2 + 5;
 
-        var checkins = await _db.DeviceCheckins
+        var raw = await _db.DeviceCheckins
             .Where(c => c.DeviceId == id && c.CheckedInAt >= since)
             .OrderBy(c => c.CheckedInAt)
             .Select(c => new { c.CheckedInAt, c.RamUsedGB })
+            .Take(5000)
             .ToListAsync();
 
+        // Downsample to hourly buckets for ranges > 7 days to keep response small
+        var checkins = days > 7
+            ? raw
+                .GroupBy(c => new DateTime(c.CheckedInAt.Year, c.CheckedInAt.Month, c.CheckedInAt.Day, c.CheckedInAt.Hour, 0, 0, DateTimeKind.Utc))
+                .Select(g => new { checkedInAt = g.Key, ramUsedGB = Math.Round(g.Average(c => c.RamUsedGB), 2) })
+                .OrderBy(c => c.checkedInAt)
+                .ToList<object>()
+            : raw.ToList<object>();
+
         var downtimes = new List<object>();
-        for (int i = 1; i < checkins.Count; i++)
+        for (int i = 1; i < raw.Count; i++)
         {
-            var gap = checkins[i].CheckedInAt - checkins[i - 1].CheckedInAt;
+            var gap = raw[i].CheckedInAt - raw[i - 1].CheckedInAt;
             if (gap.TotalMinutes > thresholdMinutes)
             {
                 downtimes.Add(new
                 {
-                    from = checkins[i - 1].CheckedInAt,
-                    to = checkins[i].CheckedInAt,
+                    from = raw[i - 1].CheckedInAt,
+                    to = raw[i].CheckedInAt,
                     durationMinutes = (int)gap.TotalMinutes
                 });
             }
@@ -182,6 +210,19 @@ public class DevicesController : ControllerBase
         device.GroupId = request.GroupId;
         if (request.RustDeskId != null)
             device.RustDeskId = request.RustDeskId;
+        if (request.AssetTag != null)
+            device.AssetTag = request.AssetTag;
+        if (request.Location != null)
+            device.Location = request.Location;
+        if (request.SerialNumber != null)
+            device.SerialNumber = request.SerialNumber;
+        if (request.PurchaseDate.HasValue)
+            device.PurchaseDate = request.PurchaseDate;
+        if (request.WarrantyExpiry.HasValue)
+            device.WarrantyExpiry = request.WarrantyExpiry;
+        // Allow explicit null to clear dates
+        if (request.ClearPurchaseDate) device.PurchaseDate = null;
+        if (request.ClearWarrantyExpiry) device.WarrantyExpiry = null;
 
         await _db.SaveChangesAsync();
         await _audit.LogAsync("device.update", "Device", id.ToString(), $"description={request.Description}");
@@ -191,6 +232,7 @@ public class DevicesController : ControllerBase
 
     // DELETE /api/devices/{id}
     [HttpDelete("{id:guid}")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> DeleteDevice(Guid id)
     {
         var device = await _db.Devices.FindAsync(id);
@@ -207,10 +249,13 @@ public class DevicesController : ControllerBase
 
     // PATCH /api/devices/bulk
     [HttpPatch("bulk")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> BulkUpdate([FromBody] BulkUpdateRequest request)
     {
         if (request.DeviceIds == null || request.DeviceIds.Count == 0)
             return BadRequest(new { message = "No device IDs provided." });
+        if (request.DeviceIds.Count > 500)
+            return BadRequest(new { message = "Cannot update more than 500 devices at once." });
 
         var devices = await _db.Devices
             .Where(d => request.DeviceIds.Contains(d.Id))
@@ -233,10 +278,13 @@ public class DevicesController : ControllerBase
 
     // DELETE /api/devices/bulk
     [HttpDelete("bulk")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> BulkDelete([FromBody] BulkDeleteRequest request)
     {
         if (request.DeviceIds == null || request.DeviceIds.Count == 0)
             return BadRequest(new { message = "No device IDs provided." });
+        if (request.DeviceIds.Count > 500)
+            return BadRequest(new { message = "Cannot delete more than 500 devices at once." });
 
         var devices = await _db.Devices
             .Where(d => request.DeviceIds.Contains(d.Id))
@@ -252,6 +300,7 @@ public class DevicesController : ControllerBase
 
     // POST /api/devices/pending/{id}/approve
     [HttpPost("pending/{id:guid}/approve")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> ApprovePending(Guid id, [FromBody] ApproveRequest request)
     {
         var pending = await _db.PendingDevices.FindAsync(id);
@@ -285,6 +334,7 @@ public class DevicesController : ControllerBase
 
     // POST /api/devices/pending/{id}/reject
     [HttpPost("pending/{id:guid}/reject")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> RejectPending(Guid id)
     {
         var pending = await _db.PendingDevices.FindAsync(id);
@@ -457,6 +507,7 @@ public class DevicesController : ControllerBase
                 c.Parameters,
                 c.IssuedByUsername,
                 c.CreatedAt,
+                c.ScheduledFor,
                 c.ExecutedAt,
                 c.Result
             })
@@ -467,6 +518,7 @@ public class DevicesController : ControllerBase
 
     // POST /api/devices/{id}/commands
     [HttpPost("{id:guid}/commands")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> IssueCommand(Guid id, [FromBody] IssueCommandRequest request)
     {
         if (!await _db.Devices.AnyAsync(d => d.Id == id))
@@ -481,7 +533,8 @@ public class DevicesController : ControllerBase
             CommandType = commandType,
             Parameters = request.Parameters,
             IssuedByUsername = User.Identity?.Name ?? "",
-            Status = CommandStatus.Pending
+            Status = CommandStatus.Pending,
+            ScheduledFor = request.ScheduledFor?.ToUniversalTime()
         };
 
         _db.DeviceCommands.Add(command);
@@ -493,6 +546,48 @@ public class DevicesController : ControllerBase
             $"type={commandType}, params={request.Parameters}");
 
         return Ok(new { command.Id });
+    }
+
+    // POST /api/devices/bulk-command
+    [HttpPost("bulk-command")]
+    [Authorize(Roles = "Admin")]
+    public async Task<IActionResult> BulkCommand([FromBody] BulkCommandRequest request)
+    {
+        if (request.DeviceIds == null || request.DeviceIds.Count == 0)
+            return BadRequest(new { message = "No device IDs provided." });
+        if (request.DeviceIds.Count > 500)
+            return BadRequest(new { message = "Cannot send commands to more than 500 devices at once." });
+        if (!Enum.TryParse<CommandType>(request.CommandType, true, out var commandType))
+            return BadRequest(new { message = $"Unknown command type: {request.CommandType}" });
+
+        var validIds = await _db.Devices
+            .Where(d => request.DeviceIds.Contains(d.Id))
+            .Select(d => d.Id)
+            .ToListAsync();
+
+        var username = User.Identity?.Name ?? "";
+        foreach (var deviceId in validIds)
+        {
+            _db.DeviceCommands.Add(new DeviceCommand
+            {
+                DeviceId = deviceId,
+                CommandType = commandType,
+                Parameters = request.Parameters,
+                IssuedByUsername = username,
+                Status = CommandStatus.Pending,
+                ScheduledFor = request.ScheduledFor?.ToUniversalTime()
+            });
+        }
+
+        await _db.SaveChangesAsync();
+
+        foreach (var deviceId in validIds)
+            _notifier.NotifyDevice(deviceId);
+
+        await _audit.LogAsync("command.bulk", "Device", null,
+            $"type={commandType}, devices={validIds.Count}, params={request.Parameters}");
+
+        return Ok(new { queued = validIds.Count });
     }
 
     private static object MapToListDto(Device d, DateTime onlineThreshold) => new
@@ -509,6 +604,9 @@ public class DevicesController : ControllerBase
         d.LastSeenAt,
         d.LicenseType,
         d.RustDeskId,
+        d.DefenderStatusJson,
+        d.PendingUpdatesCount,
+        d.LastWindowsUpdateInstalled,
         IsOnline = d.LastSeenAt.HasValue && d.LastSeenAt > onlineThreshold,
         Customer = d.Customer == null ? null : new { d.Customer.Id, d.Customer.Name },
         Group = d.Group == null ? null : new { d.Group.Id, d.Group.Name, d.Group.Color }
@@ -532,6 +630,19 @@ public class DevicesController : ControllerBase
         d.AgentVersion,
         d.NetworkAdaptersJson,
         d.CreatedAt,
+        d.LastDiskAlertAt,
+        d.DiskAlertAcknowledgedUsedPct,
+        d.RustDeskOptionsJson,
+        d.BiosInfoJson,
+        d.DefenderStatusJson,
+        d.AssetTag,
+        d.Location,
+        d.SerialNumber,
+        d.PurchaseDate,
+        d.WarrantyExpiry,
+        d.PendingUpdatesCount,
+        d.LastWindowsUpdateInstalled,
+        d.EventLogErrorsJson,
         IsOnline = d.LastSeenAt.HasValue && d.LastSeenAt > onlineThreshold,
         Customer = d.Customer == null ? null : new { d.Customer.Id, d.Customer.Name },
         Group = d.Group == null ? null : new { d.Group.Id, d.Group.Name, d.Group.Color },
@@ -542,12 +653,81 @@ public class DevicesController : ControllerBase
             c.DiskDrivesJson
         })
     };
+
+    // PATCH /api/devices/{id}/rustdesk-options
+    [HttpPatch("{id:guid}/rustdesk-options")]
+    public async Task<IActionResult> PatchRustDeskOptions(Guid id, [FromBody] RustDeskOptionsRequest request)
+    {
+        var device = await _db.Devices.FindAsync(id);
+        if (device == null)
+            return NotFound();
+
+        device.RustDeskOptionsJson = request.Options != null && request.Options.Count > 0
+            ? JsonSerializer.Serialize(request.Options)
+            : null;
+
+        await _db.SaveChangesAsync();
+        await _audit.LogAsync("device.rustdesk-options", "Device", id.ToString());
+
+        return Ok();
+    }
+
+    // POST /api/devices/{id}/acknowledge-disk-alert
+    [HttpPost("{id:guid}/acknowledge-disk-alert")]
+    public async Task<IActionResult> AcknowledgeDiskAlert(Guid id)
+    {
+        var device = await _db.Devices
+            .Include(d => d.Checkins.OrderByDescending(c => c.CheckedInAt).Take(1))
+            .FirstOrDefaultAsync(d => d.Id == id);
+
+        if (device == null) return NotFound();
+
+        var latestCheckin = device.Checkins.FirstOrDefault();
+        double usedPct = 0;
+        if (latestCheckin != null)
+        {
+            var camelCase = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+            var driveOptions = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+            var drives = JsonSerializer.Deserialize<List<DiskDriveAck>>(latestCheckin.DiskDrivesJson, driveOptions) ?? [];
+            var validDrives = drives.Where(d => d.TotalGB > 0).ToList();
+            if (validDrives.Count > 0)
+            {
+                var total = validDrives.Sum(d => d.TotalGB);
+                var free  = validDrives.Sum(d => d.FreeGB);
+                usedPct = (total - free) / total * 100;
+            }
+        }
+
+        device.DiskAlertAcknowledgedUsedPct = usedPct;
+        await _db.SaveChangesAsync();
+
+        await _audit.LogAsync("disk-alert.acknowledge", "Device", id.ToString(),
+            $"acknowledgedAtUsedPct={usedPct:F1}");
+
+        return Ok(new { acknowledgedAtUsedPct = usedPct });
+    }
 }
 
-public record PatchDeviceRequest(string? Description, Guid? CustomerId, Guid? GroupId, string? RustDeskId = null);
+file record DiskDriveAck(string Drive, double TotalGB, double FreeGB);
+
+public record PatchDeviceRequest(
+    string? Description,
+    Guid? CustomerId,
+    Guid? GroupId,
+    string? RustDeskId = null,
+    string? AssetTag = null,
+    string? Location = null,
+    string? SerialNumber = null,
+    DateTime? PurchaseDate = null,
+    DateTime? WarrantyExpiry = null,
+    bool ClearPurchaseDate = false,
+    bool ClearWarrantyExpiry = false
+);
 public record ApproveRequest(Guid? CustomerId, Guid? GroupId);
 public record BulkUpdateRequest(List<Guid> DeviceIds, Guid? SetCustomerId, Guid? SetGroupId);
 public record BulkDeleteRequest(List<Guid> DeviceIds);
 public record AddNoteRequest(string Content);
-public record IssueCommandRequest(string CommandType, string? Parameters);
+public record IssueCommandRequest(string CommandType, string? Parameters, DateTime? ScheduledFor = null);
+public record BulkCommandRequest(List<Guid> DeviceIds, string CommandType, string? Parameters, DateTime? ScheduledFor = null);
 public record LicenseExpiryRequest(DateTime? ExpiresAt);
+public record RustDeskOptionsRequest(Dictionary<string, string>? Options);

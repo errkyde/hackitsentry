@@ -274,7 +274,8 @@ public class SentryAgent : BackgroundService
             biosInfoJson = info.BiosInfoJson,
             defenderStatusJson = info.DefenderStatusJson,
             pendingUpdatesCount = info.PendingUpdatesCount,
-            lastWindowsUpdateInstalled = info.LastWindowsUpdateInstalled
+            lastWindowsUpdateInstalled = info.LastWindowsUpdateInstalled,
+            eventLogErrorsJson = CollectEventLogErrors()
         };
 
         var response = await _http.CheckinAsync(payload);
@@ -361,10 +362,10 @@ public class SentryAgent : BackgroundService
             }
         }
 
-        // Check for self-update
+        // Check for self-update — only if latest is strictly newer than what's running
         if (!string.IsNullOrEmpty(response.LatestAgentVersion) &&
             !string.IsNullOrEmpty(response.AgentDownloadUrl) &&
-            response.LatestAgentVersion != CurrentVersion)
+            IsNewerVersion(response.LatestAgentVersion, CurrentVersion))
         {
             _logger.LogInformation("New agent version available: {New} (current: {Current})",
                 response.LatestAgentVersion, CurrentVersion);
@@ -1120,6 +1121,41 @@ $results | Sort-Object TimeCreated -Descending | ForEach-Object {{
 
         if (permanentPassword != null)
             ApplyRustDeskPassword(permanentPassword);
+    }
+
+    private static bool IsNewerVersion(string? candidate, string? current)
+    {
+        if (!Version.TryParse(candidate, out var v1)) return false;
+        if (!Version.TryParse(current, out var v2)) return false;
+        return v1 > v2;
+    }
+
+    private static string CollectEventLogErrors()
+    {
+        try
+        {
+            var cutoff = DateTime.Now.AddHours(-24);
+            using var log = new System.Diagnostics.EventLog("Application");
+            var entries = log.Entries.Cast<System.Diagnostics.EventLogEntry>()
+                .Where(e => e.TimeGenerated >= cutoff
+                    && e.EntryType == System.Diagnostics.EventLogEntryType.Error
+                    && (e.Source.Contains("HackIT", StringComparison.OrdinalIgnoreCase)
+                        || e.Source.Contains("HackITSentry", StringComparison.OrdinalIgnoreCase)))
+                .OrderByDescending(e => e.TimeGenerated)
+                .Take(50)
+                .Select(e => new
+                {
+                    time = e.TimeGenerated.ToString("yyyy-MM-ddTHH:mm:ss"),
+                    source = e.Source,
+                    message = e.Message.Split('\n')[0].Trim()
+                })
+                .ToList();
+            return JsonSerializer.Serialize(entries);
+        }
+        catch
+        {
+            return "[]";
+        }
     }
 
     private static string OptionsFingerprint(Dictionary<string, string>? options)

@@ -23,6 +23,31 @@ public class Device
     public string RustDeskId { get; set; } = "";
     public string AgentVersion { get; set; } = "";
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? LastDiskAlertAt { get; set; }
+    public double? DiskAlertAcknowledgedUsedPct { get; set; }
+
+    public string? RustDeskOptionsJson { get; set; }
+    public string BiosInfoJson { get; set; } = "{}";
+    public string DefenderStatusJson { get; set; } = "{}";
+
+    // Patch Management
+    public int PendingUpdatesCount { get; set; }
+    public DateTime? LastWindowsUpdateInstalled { get; set; }
+
+    // Antivirus Alerts
+    public DateTime? LastAvAlertAt { get; set; }
+
+    public DateTime? LastOfflineAlertAt { get; set; }
+
+    // Event Log Errors (last 24h, updated on checkin)
+    public string EventLogErrorsJson { get; set; } = "[]";
+
+    // Asset Lifecycle
+    public DateTime? PurchaseDate { get; set; }
+    public DateTime? WarrantyExpiry { get; set; }
+    public string AssetTag { get; set; } = "";
+    public string Location { get; set; } = "";
+    public string SerialNumber { get; set; } = "";
 
     public ICollection<DeviceCheckin> Checkins { get; set; } = [];
     public ICollection<InstalledSoftware> Software { get; set; } = [];

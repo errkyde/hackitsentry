@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Clock, Check, X, Cpu, MemoryStick, Monitor, UserPlus, RefreshCw } from "lucide-react";
+import { Clock, Check, X, Cpu, MemoryStick, Monitor, UserPlus, RefreshCw, Package } from "lucide-react";
 import { devices, customers, groups, type PendingDevice, type Customer, type Group } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -73,7 +73,7 @@ export function Pending() {
   };
 
   return (
-    <div className="p-6 space-y-5">
+    <div className="p-4 sm:p-6 space-y-4 sm:space-y-5">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold">Ausstehende Geräte</h1>
@@ -121,6 +121,14 @@ export function Pending() {
                     <MemoryStick className="h-3.5 w-3.5" />
                     <span>{device.ramTotalGB > 0 ? `${device.ramTotalGB} GB RAM` : "—"}</span>
                   </div>
+                  {device.deployKeyName && (
+                    <div className="flex items-center gap-2">
+                      <Package className="h-3.5 w-3.5 text-blue-500" />
+                      <span className="text-xs font-medium text-blue-600 dark:text-blue-400">
+                        MSI · Deploy-Key: {device.deployKeyName}
+                      </span>
+                    </div>
+                  )}
                   {device.invitedByUsername && (
                     <div className="flex items-center gap-2 text-muted-foreground">
                       <UserPlus className="h-3.5 w-3.5" />

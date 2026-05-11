@@ -129,12 +129,57 @@ public class AgentVersionController : ControllerBase
         return NoContent();
     }
 
+    // GET /api/agent-versions/changelog-suggestions  (admin)
+    // Returns recent git commits as changelog suggestions
+    [HttpGet("changelog-suggestions")]
+    [Authorize]
+    public IActionResult GetChangelogSuggestions()
+    {
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo("git",
+                "log --pretty=format:%s -30")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WorkingDirectory = AppContext.BaseDirectory
+            };
+            using var proc = System.Diagnostics.Process.Start(psi);
+            if (proc == null) return Ok(new { lines = Array.Empty<string>() });
+            var output = proc.StandardOutput.ReadToEnd().Trim();
+            proc.WaitForExit(3000);
+            var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .Where(l => !string.IsNullOrWhiteSpace(l))
+                .ToArray();
+            return Ok(new { lines });
+        }
+        catch
+        {
+            return Ok(new { lines = Array.Empty<string>() });
+        }
+    }
+
+    // PATCH /api/agent-versions/{id}/changelog  (admin)
+    [HttpPatch("{id:guid}/changelog")]
+    [Authorize]
+    public async Task<IActionResult> UpdateChangelog(Guid id, [FromBody] ChangelogRequest request)
+    {
+        var version = await _db.AgentVersions.FindAsync(id);
+        if (version == null) return NotFound();
+        version.Changelog = request.Changelog;
+        await _db.SaveChangesAsync();
+        await _audit.LogAsync("agent-version.changelog", "AgentVersion", id.ToString(), version.Version);
+        return Ok();
+    }
+
     // POST /api/agent-versions/publish  (admin)
     // Copies the pre-built agent exe from /app/agent/ into /app/downloads/
     // and registers it as the new latest version in the DB.
     [HttpPost("publish")]
     [Authorize]
-    public async Task<IActionResult> Publish([FromServices] IConfiguration config)
+    public async Task<IActionResult> Publish([FromServices] IConfiguration config, [FromBody] PublishRequest? request = null)
     {
         var agentExe = Path.Combine(AppContext.BaseDirectory, "agent", "HackITSentry.Agent.exe");
         var versionFile = Path.Combine(AppContext.BaseDirectory, "agent", "agent-version.txt");
@@ -168,6 +213,8 @@ public class AgentVersionController : ControllerBase
             existing.DownloadUrl = downloadUrl;
             existing.IsLatest = true;
             existing.ReleasedAt = DateTime.UtcNow;
+            if (!string.IsNullOrEmpty(request?.Changelog))
+                existing.Changelog = request.Changelog;
         }
         else
         {
@@ -175,6 +222,7 @@ public class AgentVersionController : ControllerBase
             {
                 Version = version,
                 DownloadUrl = downloadUrl,
+                Changelog = request?.Changelog,
                 IsLatest = true,
                 ReleasedAt = DateTime.UtcNow
             });
@@ -188,3 +236,5 @@ public class AgentVersionController : ControllerBase
 }
 
 public record AgentVersionRequest(string Version, string? DownloadUrl, string? Changelog, bool IsLatest);
+public record ChangelogRequest(string? Changelog);
+public record PublishRequest(string? Changelog);

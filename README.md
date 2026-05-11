@@ -19,15 +19,52 @@ Zentrales IT-Monitoring-System. Agenten auf Windows-Geräten melden sich regelm�
 | Name | Image | Port | Aufgabe |
 |------|-------|------|---------|
 | `db` | postgres:16-alpine | intern | Datenbank |
-| `server` | build: server/Dockerfile | intern :5000 | ASP.NET Core API |
-| `frontend` | build: frontend/Dockerfile | 8030 | React SPA + nginx-Proxy |
+| `server` | ghcr.io/errkyde/hackitsentry-server | intern :5000 | ASP.NET Core API |
+| `frontend` | ghcr.io/errkyde/hackitsentry-frontend | 8030 | React SPA + nginx-Proxy |
 | `outpost` | nginx:alpine | 8031 | Externer Zugang für Agenten |
 
-## Deployment (Portainer)
+## Deployment
 
-1. Stack-Env-Variablen setzen (siehe `.env.example`)
-2. Stack neu deployen — **nie `docker compose` direkt ausführen**
-3. Bei nginx-Änderungen (outpost.conf, frontend/nginx.conf): jeweiligen Container neu deployen
+### Portainer / Dockhand (empfohlen)
+
+Docker Images werden automatisch bei jedem Push auf `main` gebaut und auf `ghcr.io` veröffentlicht. Für eine neue Installation reicht es, den Stack auf den Git-Repo zu zeigen.
+
+**1. Stack anlegen**
+
+In Portainer: *Stacks → Add stack → Repository*
+
+| Feld | Wert |
+|------|------|
+| Repository URL | `https://github.com/errkyde/hackitsentry` |
+| Compose path | `docker-compose.yml` |
+
+**2. Env-Variablen setzen**
+
+| Variable | Beschreibung |
+|----------|--------------|
+| `POSTGRES_PASSWORD` | Beliebiges Passwort für die Datenbank |
+| `JWT_KEY` | Zufälliger String, mind. 32 Zeichen |
+| `ENCRYPTION_KEY` | Zufälliger String, **genau** 32 Zeichen |
+| `OUTPOST_PUBLIC_URL` | Extern erreichbare URL des Servers, z.B. `https://sentry.example.com` |
+
+Alle weiteren optionalen Variablen: siehe `.env.example`.
+
+**3. Deploy**
+
+Stack deployen — fertig. Die Datenbank wird beim ersten Start automatisch eingerichtet.
+
+Bei jedem Push auf `main` bauen die GitHub Actions neue Images. Portainer/Dockhand kann so konfiguriert werden, dass es automatisch auf neue Images prüft und die Container neu startet.
+
+---
+
+### Manuell (ohne Portainer)
+
+```bash
+git clone https://github.com/errkyde/hackitsentry && cd hackitsentry
+./setup.sh          # erzeugt .env mit zufälligen Secrets
+# OUTPOST_PUBLIC_URL in .env eintragen
+docker compose up -d
+```
 
 ## Wichtige Env-Variablen
 

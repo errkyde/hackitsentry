@@ -27,8 +27,10 @@ public class JwtService
         };
 
         var token = new JwtSecurityToken(
+            issuer: "HackITSentry",
+            audience: "HackITSentry",
             claims: claims,
-            expires: DateTime.UtcNow.AddHours(12),
+            expires: DateTime.UtcNow.AddHours(8),
             signingCredentials: credentials
         );
 

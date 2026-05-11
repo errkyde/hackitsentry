@@ -15,12 +15,11 @@ services:
       retries: 5
 
   server:
+    image: ghcr.io/errkyde/hackitsentry-server:latest
     build:
       context: .
       dockerfile: server/Dockerfile
     restart: unless-stopped
-    labels:
-      - "arcane.update.skip=true"
     depends_on:
       db:
         condition: service_healthy
@@ -61,12 +60,11 @@ services:
       - ./downloads:/srv/downloads:ro
 
   frontend:
+    image: ghcr.io/errkyde/hackitsentry-frontend:latest
     build:
       context: .
       dockerfile: frontend/Dockerfile
     restart: unless-stopped
-    labels:
-      - "arcane.update.skip=true"
     depends_on:
       - server
     ports:
@@ -96,29 +94,6 @@ services:
       - rustdesk_data:/root
     restart: unless-stopped
 
-  arcane:
-    image: ghcr.io/getarcaneapp/arcane:latest
-    restart: unless-stopped
-    ports:
-      - "${ARCANE_PORT:-3552}:3552"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - arcane-data:/app/data
-      - /home/phil/sentry:/app/data/projects
-      - /home/phil/sentry:/builds
-    environment:
-      ENCRYPTION_KEY: "${ARCANE_ENCRYPTION_KEY}"
-      JWT_SECRET: "${ARCANE_JWT_SECRET}"
-      TZ: "Europe/Berlin"
-    cgroup: host
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:3552/api/health >/dev/null || exit 1"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-      start_period: 15s
-
 volumes:
   postgres_data:
   rustdesk_data:
-  arcane-data:

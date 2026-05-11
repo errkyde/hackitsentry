@@ -330,6 +330,7 @@ export interface DeviceDetail extends Device {
   serialNumber: string;
   purchaseDate: string | null;
   warrantyExpiry: string | null;
+  eventLogErrorsJson: string;
   recentCheckins: Array<{
     checkedInAt: string;
     ramUsedGB: number;
@@ -473,6 +474,7 @@ export interface Group {
   color: string | null;
   createdAt: string;
   deviceCount: number;
+  notificationSettingsJson?: string | null;
 }
 
 export interface DeviceNote {

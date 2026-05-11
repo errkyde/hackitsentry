@@ -4,6 +4,7 @@ using HackITSentry.Server.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 
 namespace HackITSentry.Server.Controllers;
 
@@ -14,11 +15,13 @@ public class SoftwareController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly AuditService _audit;
+    private readonly IMemoryCache _cache;
 
-    public SoftwareController(AppDbContext db, AuditService audit)
+    public SoftwareController(AppDbContext db, AuditService audit, IMemoryCache cache)
     {
         _db = db;
         _audit = audit;
+        _cache = cache;
     }
 
     // GET /api/software?name=&publisher=&customerId=&groupId=
@@ -128,6 +131,7 @@ public class SoftwareController : ControllerBase
 
         _db.SoftwareBlacklist.Add(entry);
         await _db.SaveChangesAsync();
+        _cache.Remove("blacklist");
 
         await _audit.LogAsync("blacklist.add", "SoftwareBlacklist", entry.Id.ToString(), request.NamePattern);
 
@@ -144,6 +148,7 @@ public class SoftwareController : ControllerBase
 
         _db.SoftwareBlacklist.Remove(entry);
         await _db.SaveChangesAsync();
+        _cache.Remove("blacklist");
 
         await _audit.LogAsync("blacklist.remove", "SoftwareBlacklist", id.ToString(), entry.NamePattern);
 

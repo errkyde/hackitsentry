@@ -15,6 +15,9 @@ public class PendingDevice
 
     public string? InvitedByUsername { get; set; }
 
+    // Set when registered via MSI + deploy key
+    public string? DeployKeyName { get; set; }
+
     // Set when approved — lets agent polling retrieve the API key reliably
     public Guid? ApprovedDeviceId { get; set; }
 }

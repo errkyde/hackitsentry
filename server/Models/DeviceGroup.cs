@@ -8,5 +8,7 @@ public class DeviceGroup
     public string? Color { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
+    public string? NotificationSettingsJson { get; set; }
+
     public ICollection<Device> Devices { get; set; } = [];
 }

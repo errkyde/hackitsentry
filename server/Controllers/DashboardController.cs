@@ -104,6 +104,9 @@ public class DashboardController : ControllerBase
             .Where(c => c.Status == CommandStatus.Pending || c.Status == CommandStatus.Sent)
             .CountAsync();
 
+        var devicesWithUpdates = await _db.Devices
+            .CountAsync(d => d.PendingUpdatesCount > 0);
+
         return Ok(new
         {
             devices = new
@@ -120,7 +123,8 @@ public class DashboardController : ControllerBase
                 softwareAlerts = activeAlerts,
                 expiringLicenses,
                 expiredLicenses,
-                pendingCommands
+                pendingCommands,
+                devicesWithUpdates
             },
             recentAlerts,
             recentAuditLogs,

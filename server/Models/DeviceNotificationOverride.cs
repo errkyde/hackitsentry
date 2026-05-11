@@ -11,4 +11,8 @@ public class DeviceNotificationOverride
     public bool? AlertOnOnline { get; set; }
     public bool? AlertOnSoftwareAlert { get; set; }
     public bool? AlertOnDiskFull { get; set; }
+    public int? OfflineAlertDelayMinutes { get; set; }
+
+    // null = custom override (immune to group sync); set = managed by this group
+    public Guid? SourceGroupId { get; set; }
 }

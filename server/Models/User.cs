@@ -7,4 +7,10 @@ public class User
     public string PasswordHash { get; set; } = "";
     public string Role { get; set; } = "Admin";
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+    // LDAP fields (null = local account)
+    public bool IsLocal { get; set; } = true;
+    public string? LdapDn { get; set; }
+    public string? DisplayName { get; set; }
+    public string? Email { get; set; }
 }

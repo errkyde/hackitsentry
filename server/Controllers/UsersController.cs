@@ -23,7 +23,7 @@ public class UsersController : ControllerBase
     {
         var users = _db.Users
             .OrderBy(u => u.Username)
-            .Select(u => new { u.Id, u.Username, u.Role, u.CreatedAt })
+            .Select(u => new { u.Id, u.Username, u.Role, u.CreatedAt, u.IsLocal, u.DisplayName, u.Email })
             .ToList();
         return Ok(users);
     }
@@ -37,18 +37,19 @@ public class UsersController : ControllerBase
         if (request.Password.Length < 6)
             return BadRequest(new { message = "Passwort muss mindestens 6 Zeichen lang sein" });
 
-        var role = request.Role == "Admin" ? "Admin" : "User";
+        var role = request.Role == "Admin" ? "Admin" : "Viewer";
 
         var user = new User
         {
             Username = request.Username,
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(request.Password),
-            Role = role
+            Role = role,
+            IsLocal = true,
         };
         _db.Users.Add(user);
         _db.SaveChanges();
 
-        return Ok(new { user.Id, user.Username, user.Role, user.CreatedAt });
+        return Ok(new { user.Id, user.Username, user.Role, user.CreatedAt, user.IsLocal });
     }
 
     [HttpPost("{id:guid}/reset-password")]
@@ -57,6 +58,9 @@ public class UsersController : ControllerBase
         var user = _db.Users.Find(id);
         if (user == null)
             return NotFound();
+
+        if (!user.IsLocal)
+            return BadRequest(new { message = "Passwort kann für LDAP-Benutzer nicht geändert werden." });
 
         if (request.NewPassword.Length < 6)
             return BadRequest(new { message = "Passwort muss mindestens 6 Zeichen lang sein" });

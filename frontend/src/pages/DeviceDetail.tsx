@@ -759,6 +759,10 @@ export function DeviceDetail() {
               <Cpu className="h-3.5 w-3.5 sm:mr-1.5 shrink-0" />
               <span className="hidden sm:inline">Hardware</span>
             </TabsTrigger>
+            <TabsTrigger value="asset" title="Asset">
+              <Tag className="h-3.5 w-3.5 sm:mr-1.5 shrink-0" />
+              <span className="hidden sm:inline">Asset</span>
+            </TabsTrigger>
             <TabsTrigger value="network" title="Netzwerk">
               <Globe className="h-3.5 w-3.5 sm:mr-1.5 shrink-0" />
               <span className="hidden sm:inline">Netzwerk</span>
@@ -786,9 +790,16 @@ export function DeviceDetail() {
               <Activity className="h-3.5 w-3.5 sm:mr-1.5 shrink-0" />
               <span className="hidden sm:inline">Verlauf</span>
             </TabsTrigger>
-            <TabsTrigger value="asset" title="Asset">
-              <Tag className="h-3.5 w-3.5 sm:mr-1.5 shrink-0" />
-              <span className="hidden sm:inline">Asset</span>
+            <TabsTrigger value="eventlog" title="Windows-Fehler">
+              <ScrollText className="h-3.5 w-3.5 sm:mr-1.5 shrink-0" />
+              {(() => {
+                try {
+                  const errs = JSON.parse(device?.eventLogErrorsJson || "[]");
+                  return errs.length > 0
+                    ? <><span className="hidden sm:inline">Windows-Fehler</span><Badge variant="destructive" className="ml-1 h-4 px-1 text-xs">{errs.length}</Badge></>
+                    : <span className="hidden sm:inline">Windows-Fehler</span>;
+                } catch { return <span className="hidden sm:inline">Windows-Fehler</span>; }
+              })()}
             </TabsTrigger>
           </TabsList>
         </div>
@@ -1751,6 +1762,44 @@ export function DeviceDetail() {
                   {assetSaving ? "Speichern..." : "Speichern"}
                 </Button>
               </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Windows Event Log Errors */}
+        <TabsContent value="eventlog">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base flex items-center gap-2">
+                <ScrollText className="h-4 w-4" />
+                Windows-Fehlerprotokoll
+              </CardTitle>
+              <p className="text-xs text-muted-foreground">Automatisch bei jedem Check-in aktualisiert — letzte 24 Stunden, nur Fehler des Sentry-Agents.</p>
+            </CardHeader>
+            <CardContent>
+              {(() => {
+                let errors: Array<{ time: string; source: string; message: string }> = [];
+                try { errors = JSON.parse(device?.eventLogErrorsJson || "[]"); } catch { /* */ }
+                if (errors.length === 0) {
+                  return (
+                    <div className="flex flex-col items-center justify-center py-12 text-center">
+                      <ScrollText className="h-8 w-8 text-muted-foreground/30 mb-2" />
+                      <p className="text-sm text-muted-foreground">Keine Fehler in den letzten 24 Stunden</p>
+                    </div>
+                  );
+                }
+                return (
+                  <div className="bg-zinc-950 rounded-md p-4 space-y-1 font-mono text-xs leading-5 max-h-[60vh] overflow-y-auto">
+                    {errors.map((e, i) => (
+                      <div key={i} className="text-red-400">
+                        <span className="text-zinc-500">[{new Date(e.time).toLocaleString("de-DE")}]</span>
+                        {" "}<span className="text-zinc-400">[{e.source}]</span>
+                        {" "}{e.message}
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
             </CardContent>
           </Card>
         </TabsContent>

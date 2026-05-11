@@ -202,6 +202,8 @@ public record CheckinResponse(
     string? RustDeskPublicKey = null,
     bool RustDeskAutoInstall = false,
     string? RustDeskDownloadUrl = null,
-    int? CheckinIntervalMinutes = null
+    int? CheckinIntervalMinutes = null,
+    Dictionary<string, string>? RustDeskDeviceOptions = null,
+    int? RustDeskForceApplyVersion = null
 );
 public record PendingCommandDto(Guid Id, string CommandType, string? Parameters);

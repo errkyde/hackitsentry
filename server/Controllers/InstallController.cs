@@ -232,13 +232,17 @@ public class InstallController : ControllerBase
         await _audit.LogAsync("DEPLOY_KEY_DOWNLOAD", "DeployKey", deployKey.Id.ToString(),
             $"Deploy-Key \"{deployKey.Name}\" verwendet");
 
-        // MSI preferred: served as-is, properties are passed via msiexec at install time
+        var outpostUrl = !string.IsNullOrEmpty(_runtimeSettings.AgentServerUrl)
+            ? _runtimeSettings.AgentServerUrl
+            : (_config["OutpostPublicUrl"]?.TrimEnd('/') ?? $"{Request.Scheme}://{Request.Host}");
+
+        // MSI preferred: serve a PowerShell install script with SERVERURL + DEPLOYKEY baked in
         if (_installer.IsMsiAvailable)
         {
-            Response.ContentLength = _installer.MsiFileSize;
-            return File(System.IO.File.OpenRead(_installer.MsiPath),
-                "application/octet-stream", "HackITSentry-Setup.msi");
+            var ps1 = BuildMsiInstallScript(outpostUrl, headerKey);
+            return Content(ps1, "text/plain; charset=utf-8");
         }
+        // Note: raw MSI binary is served by /install/deploy/msi (called from the PS1 script)
 
         // Fallback: patched EXE (for deployments without MSI)
         if (!_installer.IsAvailable)
@@ -254,14 +258,55 @@ public class InstallController : ControllerBase
         _db.InstallTokens.Add(installToken);
         await _db.SaveChangesAsync();
 
-        var outpostUrl = !string.IsNullOrEmpty(_runtimeSettings.AgentServerUrl)
-            ? _runtimeSettings.AgentServerUrl
-            : (_config["OutpostPublicUrl"]?.TrimEnd('/') ?? $"{Request.Scheme}://{Request.Host}");
-
         Response.ContentLength = _installer.FileSize;
         var stream = _installer.CreatePatchedStream(outpostUrl, token);
         return File(stream, "application/octet-stream", "HackITSentry-Setup.exe");
     }
+
+    // Serves the raw MSI binary for the PS1 install script to download
+    [HttpGet("/install/deploy/msi")]
+    public async Task<IActionResult> DeployMsiDownload()
+    {
+        var headerKey = Request.Headers["X-Deploy-Key"].FirstOrDefault();
+        if (string.IsNullOrEmpty(headerKey))
+            return Unauthorized(new { message = "X-Deploy-Key header fehlt." });
+
+        var deployKey = await _db.DeployKeys.FirstOrDefaultAsync(k => k.Key == headerKey);
+        if (deployKey == null)
+            return Unauthorized(new { message = "Ungültiger Deploy-Key." });
+
+        if (!_installer.IsMsiAvailable)
+            return StatusCode(503, "MSI nicht verfügbar.");
+
+        Response.ContentLength = _installer.MsiFileSize;
+        return File(System.IO.File.OpenRead(_installer.MsiPath),
+            "application/octet-stream", "HackITSentry-Setup.msi");
+    }
+
+    private static string BuildMsiInstallScript(string serverUrl, string deployKey) => $$"""
+        # HackIT Sentry Agent - automatische Installation
+        # Generiert von HackIT Sentry, idempotent (GPO-Startup-Script sicher)
+        $ErrorActionPreference = 'Stop'
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $ServerUrl = '{{serverUrl}}'
+        $DeployKey = '{{deployKey}}'
+
+        # Bereits installiert? Abbruch.
+        if (Get-Service -Name 'HackITSentryAgent' -ErrorAction SilentlyContinue) { exit 0 }
+
+        $tmp = Join-Path $env:TEMP 'HackITSentry-Setup.msi'
+        try {
+            $wc = [System.Net.WebClient]::new()
+            $wc.Headers.Add('X-Deploy-Key', $DeployKey)
+            $wc.DownloadFile("$ServerUrl/install/deploy/msi", $tmp)
+            $msiArgs = "/i `"$tmp`" SERVERURL=`"$ServerUrl`" DEPLOYKEY=`"$DeployKey`" /quiet /norestart"
+            $p = Start-Process msiexec -ArgumentList $msiArgs -Wait -PassThru
+            if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) { throw "msiexec beendet mit Code $($p.ExitCode)" }
+        } finally {
+            if (Test-Path $tmp) { Remove-Item $tmp -Force }
+        }
+        """;
+
 
     [HttpGet("/api/deploy-keys")]
     [Authorize]

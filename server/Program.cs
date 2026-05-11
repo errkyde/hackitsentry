@@ -2,15 +2,49 @@ using HackITSentry.Server.Data;
 using HackITSentry.Server.Models;
 using HackITSentry.Server.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
+using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+builder.Services.AddMemoryCache();
+builder.Services.AddResponseCompression(opts =>
+{
+    opts.EnableForHttps = true;
+    opts.MimeTypes = ResponseCompressionDefaults.MimeTypes.Concat(["application/json"]);
+});
+
+builder.Services.AddRateLimiter(options =>
+{
+    // Login: max 5 attempts per IP per minute
+    options.AddFixedWindowLimiter("login", o =>
+    {
+        o.PermitLimit = 5;
+        o.Window = TimeSpan.FromMinutes(1);
+        o.QueueLimit = 0;
+        o.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+    });
+    // Agent registration: max 10 per IP per minute
+    options.AddFixedWindowLimiter("agent-register", o =>
+    {
+        o.PermitLimit = 10;
+        o.Window = TimeSpan.FromMinutes(1);
+        o.QueueLimit = 0;
+        o.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+    });
+    options.OnRejected = async (ctx, token) =>
+    {
+        ctx.HttpContext.Response.StatusCode = 429;
+        await ctx.HttpContext.Response.WriteAsync("Too many requests. Please try again later.", token);
+    };
+});
 
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
@@ -23,6 +57,7 @@ builder.Services.AddSingleton<InstallerService>();
 builder.Services.AddSingleton<AgentCommandNotifier>();
 builder.Services.AddHostedService<DeviceOfflineAlertService>();
 builder.Services.AddScoped<AuditService>();
+builder.Services.AddScoped<LdapService>();
 builder.Services.AddHttpContextAccessor();
 
 var jwtKey = builder.Configuration["Jwt:Key"]!;
@@ -33,19 +68,26 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         {
             ValidateIssuerSigningKey = true,
             IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey)),
-            ValidateIssuer = false,
-            ValidateAudience = false,
+            ValidateIssuer = true,
+            ValidIssuer = "HackITSentry",
+            ValidateAudience = true,
+            ValidAudience = "HackITSentry",
             ClockSkew = TimeSpan.Zero
         };
     });
 
 builder.Services.AddAuthorization();
 
+var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
+    ?? ["http://localhost:5173"];
+
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
     {
-        policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod();
+        policy.WithOrigins(allowedOrigins)
+              .AllowAnyHeader()
+              .AllowAnyMethod();
     });
 });
 
@@ -56,6 +98,9 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     db.Database.EnsureCreated();
+
+    // All DDL migrations run in one transaction — much faster than one round-trip each
+    using var tx = db.Database.BeginTransaction();
 
     // Create tables for existing deployments (EnsureCreated won't add new tables)
     db.Database.ExecuteSqlRaw("""
@@ -186,6 +231,11 @@ using (var scope = app.Services.CreateScope())
         """);
 
     db.Database.ExecuteSqlRaw("""
+        ALTER TABLE "PendingDevices"
+            ADD COLUMN IF NOT EXISTS "DeployKeyName" text
+        """);
+
+    db.Database.ExecuteSqlRaw("""
         ALTER TABLE "Devices"
             ADD COLUMN IF NOT EXISTS "RustDeskId" text NOT NULL DEFAULT ''
         """);
@@ -193,6 +243,16 @@ using (var scope = app.Services.CreateScope())
     db.Database.ExecuteSqlRaw("""
         ALTER TABLE "Devices"
             ADD COLUMN IF NOT EXISTS "AgentVersion" text NOT NULL DEFAULT ''
+        """);
+
+    db.Database.ExecuteSqlRaw("""
+        ALTER TABLE "Devices"
+            ADD COLUMN IF NOT EXISTS "LastDiskAlertAt" timestamp with time zone
+        """);
+
+    db.Database.ExecuteSqlRaw("""
+        ALTER TABLE "Devices"
+            ADD COLUMN IF NOT EXISTS "DiskAlertAcknowledgedUsedPct" double precision
         """);
 
     db.Database.ExecuteSqlRaw("""
@@ -212,6 +272,16 @@ using (var scope = app.Services.CreateScope())
     db.Database.ExecuteSqlRaw("""
         CREATE UNIQUE INDEX IF NOT EXISTS "IX_DeviceNotificationOverrides_DeviceId"
             ON "DeviceNotificationOverrides" ("DeviceId")
+        """);
+
+    db.Database.ExecuteSqlRaw("""
+        ALTER TABLE "DeviceNotificationOverrides"
+            ADD COLUMN IF NOT EXISTS "OfflineAlertDelayMinutes" integer NULL
+        """);
+
+    db.Database.ExecuteSqlRaw("""
+        ALTER TABLE "DeviceNotificationOverrides"
+            ADD COLUMN IF NOT EXISTS "SourceGroupId" uuid NULL
         """);
 
     db.Database.ExecuteSqlRaw("""
@@ -259,6 +329,183 @@ using (var scope = app.Services.CreateScope())
             ON "DeployKeys" ("Key")
         """);
 
+    db.Database.ExecuteSqlRaw("""
+        ALTER TABLE "Devices"
+            ADD COLUMN IF NOT EXISTS "RustDeskOptionsJson" text
+        """);
+
+    db.Database.ExecuteSqlRaw(
+        """ALTER TABLE "Devices" ADD COLUMN IF NOT EXISTS "BiosInfoJson" text NOT NULL DEFAULT '{{}}'""");
+
+    db.Database.ExecuteSqlRaw(
+        """ALTER TABLE "Devices" ADD COLUMN IF NOT EXISTS "DefenderStatusJson" text NOT NULL DEFAULT '{{}}'""");
+
+    // Asset Lifecycle
+    db.Database.ExecuteSqlRaw("""
+        ALTER TABLE "Devices" ADD COLUMN IF NOT EXISTS "PurchaseDate"   timestamp with time zone
+        """);
+    db.Database.ExecuteSqlRaw("""
+        ALTER TABLE "Devices" ADD COLUMN IF NOT EXISTS "WarrantyExpiry" timestamp with time zone
+        """);
+    db.Database.ExecuteSqlRaw("""
+        ALTER TABLE "Devices" ADD COLUMN IF NOT EXISTS "AssetTag"       text NOT NULL DEFAULT ''
+        """);
+    db.Database.ExecuteSqlRaw("""
+        ALTER TABLE "Devices" ADD COLUMN IF NOT EXISTS "Location"       text NOT NULL DEFAULT ''
+        """);
+    db.Database.ExecuteSqlRaw("""
+        ALTER TABLE "Devices" ADD COLUMN IF NOT EXISTS "SerialNumber"   text NOT NULL DEFAULT ''
+        """);
+
+    // Offline Alert Delay
+    db.Database.ExecuteSqlRaw("""
+        ALTER TABLE "Devices" ADD COLUMN IF NOT EXISTS "LastOfflineAlertAt" timestamp with time zone
+        """);
+
+    // Scheduled Commands
+    db.Database.ExecuteSqlRaw("""
+        ALTER TABLE "DeviceCommands" ADD COLUMN IF NOT EXISTS "ScheduledFor" timestamp with time zone
+        """);
+
+    // Patch Management
+    db.Database.ExecuteSqlRaw("""
+        ALTER TABLE "Devices" ADD COLUMN IF NOT EXISTS "PendingUpdatesCount" integer NOT NULL DEFAULT 0
+        """);
+    db.Database.ExecuteSqlRaw("""
+        ALTER TABLE "Devices" ADD COLUMN IF NOT EXISTS "LastWindowsUpdateInstalled" timestamp with time zone
+        """);
+
+    // Antivirus Alerts
+    db.Database.ExecuteSqlRaw("""
+        ALTER TABLE "Devices" ADD COLUMN IF NOT EXISTS "LastAvAlertAt" timestamp with time zone
+        """);
+
+    // Software Deployment
+    db.Database.ExecuteSqlRaw("""
+        CREATE TABLE IF NOT EXISTS "SoftwarePackages" (
+            "Id"           uuid NOT NULL DEFAULT gen_random_uuid(),
+            "Name"         text NOT NULL DEFAULT '',
+            "Version"      text NOT NULL DEFAULT '',
+            "Type"         text NOT NULL DEFAULT 'winget',
+            "InstallCmd"   text NOT NULL DEFAULT '',
+            "UninstallCmd" text,
+            "Description"  text NOT NULL DEFAULT '',
+            "CreatedBy"    text NOT NULL DEFAULT '',
+            "CreatedAt"    timestamp with time zone NOT NULL DEFAULT now(),
+            CONSTRAINT "PK_SoftwarePackages" PRIMARY KEY ("Id")
+        )
+        """);
+
+    db.Database.ExecuteSqlRaw("""
+        CREATE TABLE IF NOT EXISTS "DeploymentJobs" (
+            "Id"          uuid NOT NULL DEFAULT gen_random_uuid(),
+            "PackageId"   uuid NOT NULL,
+            "DeviceId"    uuid NOT NULL,
+            "Status"      text NOT NULL DEFAULT 'Queued',
+            "Output"      text,
+            "CreatedBy"   text NOT NULL DEFAULT '',
+            "CreatedAt"   timestamp with time zone NOT NULL DEFAULT now(),
+            "ExecutedAt"  timestamp with time zone,
+            CONSTRAINT "PK_DeploymentJobs" PRIMARY KEY ("Id"),
+            CONSTRAINT "FK_DeploymentJobs_Packages" FOREIGN KEY ("PackageId")
+                REFERENCES "SoftwarePackages" ("Id") ON DELETE CASCADE,
+            CONSTRAINT "FK_DeploymentJobs_Devices" FOREIGN KEY ("DeviceId")
+                REFERENCES "Devices" ("Id") ON DELETE CASCADE
+        )
+        """);
+
+    db.Database.ExecuteSqlRaw("""
+        CREATE INDEX IF NOT EXISTS "IX_DeploymentJobs_DeviceId_Status"
+            ON "DeploymentJobs" ("DeviceId", "Status")
+        """);
+
+    // Script Library
+    db.Database.ExecuteSqlRaw("""
+        CREATE TABLE IF NOT EXISTS "ScriptTemplates" (
+            "Id"          uuid NOT NULL DEFAULT gen_random_uuid(),
+            "Name"        text NOT NULL DEFAULT '',
+            "Description" text NOT NULL DEFAULT '',
+            "Script"      text NOT NULL DEFAULT '',
+            "CreatedBy"   text NOT NULL DEFAULT '',
+            "CreatedAt"   timestamp with time zone NOT NULL DEFAULT now(),
+            CONSTRAINT "PK_ScriptTemplates" PRIMARY KEY ("Id")
+        )
+        """);
+
+    // LDAP fields on Users table
+    db.Database.ExecuteSqlRaw("""ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "IsLocal" boolean NOT NULL DEFAULT true""");
+    db.Database.ExecuteSqlRaw("""ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "LdapDn" text""");
+    db.Database.ExecuteSqlRaw("""ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "DisplayName" text""");
+    db.Database.ExecuteSqlRaw("""ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "Email" text""");
+
+    // Indexes on FK columns used in every device-detail and check-in query
+    db.Database.ExecuteSqlRaw("""
+        CREATE INDEX IF NOT EXISTS "IX_DeviceCheckins_DeviceId"
+            ON "DeviceCheckins" ("DeviceId")
+        """);
+    db.Database.ExecuteSqlRaw("""
+        CREATE INDEX IF NOT EXISTS "IX_InstalledSoftware_DeviceId"
+            ON "InstalledSoftware" ("DeviceId")
+        """);
+    db.Database.ExecuteSqlRaw("""
+        CREATE INDEX IF NOT EXISTS "IX_DeviceNotes_DeviceId"
+            ON "DeviceNotes" ("DeviceId")
+        """);
+    db.Database.ExecuteSqlRaw("""
+        CREATE INDEX IF NOT EXISTS "IX_DeviceCommands_DeviceId_Status"
+            ON "DeviceCommands" ("DeviceId", "Status")
+        """);
+    db.Database.ExecuteSqlRaw("""
+        CREATE INDEX IF NOT EXISTS "IX_SoftwareAlerts_DeviceId_AcknowledgedAt"
+            ON "SoftwareAlerts" ("DeviceId", "AcknowledgedAt")
+        """);
+    db.Database.ExecuteSqlRaw("""
+        CREATE INDEX IF NOT EXISTS "IX_AuditLogs_Timestamp"
+            ON "AuditLogs" ("Timestamp" DESC)
+        """);
+    db.Database.ExecuteSqlRaw("""
+        ALTER TABLE "Devices"
+            ADD COLUMN IF NOT EXISTS "EventLogErrorsJson" text NOT NULL DEFAULT '[]'
+        """);
+    db.Database.ExecuteSqlRaw("""
+        ALTER TABLE "DeviceGroups"
+            ADD COLUMN IF NOT EXISTS "NotificationSettingsJson" text NULL
+        """);
+
+    tx.Commit();
+
+    // Seed default software packages — adds missing entries by name, never overwrites existing
+    var existingNames = db.SoftwarePackages.Select(p => p.Name).ToHashSet();
+    var seedPackages = new[]
+    {
+        new HackITSentry.Server.Models.SoftwarePackage { Name = "Google Chrome",        Version = "latest", Type = "winget", InstallCmd = "Google.Chrome",                  Description = "Webbrowser von Google",                  CreatedBy = "system" },
+        new HackITSentry.Server.Models.SoftwarePackage { Name = "Mozilla Firefox",      Version = "latest", Type = "winget", InstallCmd = "Mozilla.Firefox",                Description = "Open-Source Webbrowser",                 CreatedBy = "system" },
+        new HackITSentry.Server.Models.SoftwarePackage { Name = "7-Zip",                Version = "latest", Type = "winget", InstallCmd = "7zip.7zip",                      Description = "Freie Archivierungssoftware",            CreatedBy = "system" },
+        new HackITSentry.Server.Models.SoftwarePackage { Name = "VLC Media Player",     Version = "latest", Type = "winget", InstallCmd = "VideoLAN.VLC",                   Description = "Universeller Medienabspieler",           CreatedBy = "system" },
+        new HackITSentry.Server.Models.SoftwarePackage { Name = "Notepad++",            Version = "latest", Type = "winget", InstallCmd = "Notepad++.Notepad++",            Description = "Erweiterter Texteditor",                 CreatedBy = "system" },
+        new HackITSentry.Server.Models.SoftwarePackage { Name = "Adobe Acrobat Reader", Version = "latest", Type = "winget", InstallCmd = "Adobe.Acrobat.Reader.64-bit",    Description = "PDF-Betrachter von Adobe",               CreatedBy = "system" },
+        new HackITSentry.Server.Models.SoftwarePackage { Name = "Microsoft Teams",      Version = "latest", Type = "winget", InstallCmd = "Microsoft.Teams",                Description = "Kommunikationsplattform von Microsoft",  CreatedBy = "system" },
+        new HackITSentry.Server.Models.SoftwarePackage { Name = "Zoom",                 Version = "latest", Type = "winget", InstallCmd = "Zoom.Zoom",                      Description = "Videokonferenz-Software",                CreatedBy = "system" },
+        new HackITSentry.Server.Models.SoftwarePackage { Name = "Visual Studio Code",   Version = "latest", Type = "winget", InstallCmd = "Microsoft.VisualStudioCode",     Description = "Code-Editor von Microsoft",              CreatedBy = "system" },
+        new HackITSentry.Server.Models.SoftwarePackage { Name = "KeePass",              Version = "latest", Type = "winget", InstallCmd = "DominikReichl.KeePass",          Description = "Open-Source Passwortmanager",            CreatedBy = "system" },
+        new HackITSentry.Server.Models.SoftwarePackage { Name = "Greenshot",            Version = "latest", Type = "winget", InstallCmd = "Greenshot.Greenshot",            Description = "Screenshot-Tool",                        CreatedBy = "system" },
+        new HackITSentry.Server.Models.SoftwarePackage { Name = "WinRAR",               Version = "latest", Type = "winget", InstallCmd = "RARLab.WinRAR",                  Description = "Archivierungssoftware",                  CreatedBy = "system" },
+        new HackITSentry.Server.Models.SoftwarePackage { Name = "PuTTY",                Version = "latest", Type = "winget", InstallCmd = "PuTTY.PuTTY",                    Description = "SSH- und Telnet-Client",                 CreatedBy = "system" },
+        new HackITSentry.Server.Models.SoftwarePackage { Name = "HWiNFO",               Version = "latest", Type = "winget", InstallCmd = "REALiX.HWiNFO",                  Description = "Hardware-Diagnose und Monitoring",       CreatedBy = "system" },
+        new HackITSentry.Server.Models.SoftwarePackage { Name = "Bitwarden",             Version = "latest", Type = "winget", InstallCmd = "Bitwarden.Bitwarden",             Description = "Open-Source Passwortmanager",            CreatedBy = "system" },
+        new HackITSentry.Server.Models.SoftwarePackage { Name = "WireGuard",             Version = "latest", Type = "winget", InstallCmd = "WireGuard.WireGuard",             Description = "Moderner, schneller VPN-Client",         CreatedBy = "system" },
+        new HackITSentry.Server.Models.SoftwarePackage { Name = "OpenVPN",               Version = "latest", Type = "winget", InstallCmd = "OpenVPNTechnologies.OpenVPN",     Description = "Open-Source VPN-Client",                 CreatedBy = "system" },
+        new HackITSentry.Server.Models.SoftwarePackage { Name = "TeamViewer",            Version = "latest", Type = "winget", InstallCmd = "TeamViewer.TeamViewer",           Description = "Remote-Desktop und Fernwartung",         CreatedBy = "system" },
+        new HackITSentry.Server.Models.SoftwarePackage { Name = "AnyDesk",               Version = "latest", Type = "winget", InstallCmd = "AnyDeskSoftwareGmbH.AnyDesk",    Description = "Schnelle Remote-Desktop-Software",       CreatedBy = "system" },
+        new HackITSentry.Server.Models.SoftwarePackage { Name = "RustDesk",              Version = "latest", Type = "winget", InstallCmd = "RustDesk.RustDesk",              Description = "Open-Source Remote-Desktop (self-hosted)", CreatedBy = "system" },
+    };
+    var toAdd = seedPackages.Where(p => !existingNames.Contains(p.Name)).ToList();
+    if (toAdd.Count > 0)
+    {
+        db.SoftwarePackages.AddRange(toAdd);
+        db.SaveChanges();
+    }
+
     // Bootstrap RuntimeSettings: env/appsettings first, then DB overrides
     var runtimeSettings = app.Services.GetRequiredService<RuntimeSettings>();
     runtimeSettings.LoadFromConfig(app.Configuration);
@@ -271,6 +518,17 @@ if (app.Environment.IsDevelopment())
     app.UseSwagger();
     app.UseSwaggerUI();
 }
+
+app.UseResponseCompression();
+app.UseRateLimiter();
+
+app.Use(async (ctx, next) =>
+{
+    ctx.Response.Headers["X-Content-Type-Options"] = "nosniff";
+    ctx.Response.Headers["X-Frame-Options"] = "DENY";
+    ctx.Response.Headers["Referrer-Policy"] = "strict-origin-when-cross-origin";
+    await next();
+});
 
 app.UseCors();
 app.UseAuthentication();

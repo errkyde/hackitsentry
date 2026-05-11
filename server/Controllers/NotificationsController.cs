@@ -32,6 +32,8 @@ public class NotificationsController : ControllerBase
             newPending = _settings.NotifyNewPending,
             softwareAlert = _settings.NotifySoftwareAlert,
             diskFull = _settings.NotifyDiskFull,
+            offlineAlertDelayMinutes = _settings.OfflineAlertDelayMinutes,
+            avSignatureAgeAlertDays = _settings.AvSignatureAgeAlertDays,
         });
     }
 
@@ -44,6 +46,8 @@ public class NotificationsController : ControllerBase
         _settings.NotifyNewPending = req.NewPending;
         _settings.NotifySoftwareAlert = req.SoftwareAlert;
         _settings.NotifyDiskFull = req.DiskFull;
+        _settings.OfflineAlertDelayMinutes = Math.Max(0, req.OfflineAlertDelayMinutes);
+        _settings.AvSignatureAgeAlertDays = Math.Max(0, req.AvSignatureAgeAlertDays);
 
         var entries = new Dictionary<string, string>
         {
@@ -52,6 +56,8 @@ public class NotificationsController : ControllerBase
             ["Notify:NewPending"] = req.NewPending.ToString(),
             ["Notify:SoftwareAlert"] = req.SoftwareAlert.ToString(),
             ["Notify:DiskFull"] = req.DiskFull.ToString(),
+            ["Notify:OfflineAlertDelayMinutes"] = _settings.OfflineAlertDelayMinutes.ToString(),
+            ["Notify:AvSignatureAgeAlertDays"] = _settings.AvSignatureAgeAlertDays.ToString(),
         };
 
         foreach (var (key, value) in entries)
@@ -91,7 +97,28 @@ public class NotificationsController : ControllerBase
             o.AlertOnOnline,
             o.AlertOnSoftwareAlert,
             o.AlertOnDiskFull,
+            o.OfflineAlertDelayMinutes,
         }));
+    }
+
+    // GET /api/settings/notifications/devices/{deviceId}
+    [HttpGet("devices/{deviceId:guid}")]
+    public async Task<IActionResult> GetDeviceOverride(Guid deviceId)
+    {
+        var o = await _db.DeviceNotificationOverrides
+            .FirstOrDefaultAsync(o => o.DeviceId == deviceId);
+
+        if (o == null) return NotFound();
+
+        return Ok(new
+        {
+            o.AlertOnOffline,
+            o.AlertOnOnline,
+            o.AlertOnSoftwareAlert,
+            o.AlertOnDiskFull,
+            o.OfflineAlertDelayMinutes,
+            o.SourceGroupId,
+        });
     }
 
     // POST /api/settings/notifications/devices
@@ -111,6 +138,8 @@ public class NotificationsController : ControllerBase
             existing.AlertOnOnline = req.AlertOnOnline;
             existing.AlertOnSoftwareAlert = req.AlertOnSoftwareAlert;
             existing.AlertOnDiskFull = req.AlertOnDiskFull;
+            existing.OfflineAlertDelayMinutes = req.OfflineAlertDelayMinutes;
+            existing.SourceGroupId = null; // manual override detaches from group
         }
         else
         {
@@ -121,6 +150,8 @@ public class NotificationsController : ControllerBase
                 AlertOnOnline = req.AlertOnOnline,
                 AlertOnSoftwareAlert = req.AlertOnSoftwareAlert,
                 AlertOnDiskFull = req.AlertOnDiskFull,
+                OfflineAlertDelayMinutes = req.OfflineAlertDelayMinutes,
+                SourceGroupId = null,
             });
         }
 
@@ -149,7 +180,9 @@ public record NotificationDefaultsRequest(
     bool DeviceOnline,
     bool NewPending,
     bool SoftwareAlert,
-    bool DiskFull
+    bool DiskFull,
+    int OfflineAlertDelayMinutes = 0,
+    int AvSignatureAgeAlertDays = 7
 );
 
 public record DeviceOverrideRequest(
@@ -157,5 +190,6 @@ public record DeviceOverrideRequest(
     bool? AlertOnOffline,
     bool? AlertOnOnline,
     bool? AlertOnSoftwareAlert,
-    bool? AlertOnDiskFull
+    bool? AlertOnDiskFull,
+    int? OfflineAlertDelayMinutes = null
 );

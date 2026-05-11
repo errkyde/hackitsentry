@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Monitor, Wifi, WifiOff, Clock, Users, Layers,
-  AlertTriangle, ShieldAlert, CalendarX, Terminal, CheckCircle2
+  AlertTriangle, ShieldAlert, CalendarX, Terminal, CheckCircle2, Download
 } from "lucide-react";
 import { dashboard, software, type DashboardData, type SoftwareAlertItem } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -89,7 +89,7 @@ export function Dashboard() {
     : 0;
 
   return (
-    <div className="p-6 space-y-6 max-w-7xl">
+    <div className="p-4 sm:p-6 space-y-4 sm:space-y-6 max-w-7xl">
       <div>
         <h1 className="text-xl font-semibold">Dashboard</h1>
         <p className="text-sm text-muted-foreground">Übersicht über alle Geräte und Aktivitäten</p>
@@ -141,7 +141,8 @@ export function Dashboard() {
 
       {/* Alert overview */}
       {(data.alerts.softwareAlerts > 0 || data.alerts.expiringLicenses > 0 ||
-        data.alerts.expiredLicenses > 0 || data.alerts.pendingCommands > 0) && (
+        data.alerts.expiredLicenses > 0 || data.alerts.pendingCommands > 0 ||
+        data.alerts.devicesWithUpdates > 0) && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
           {data.alerts.softwareAlerts > 0 && (
             <Card className="border-amber-500/30 bg-amber-500/5">
@@ -172,6 +173,17 @@ export function Dashboard() {
                 <div>
                   <p className="text-sm font-medium text-amber-500">{data.alerts.expiringLicenses} Lizenz{data.alerts.expiringLicenses !== 1 ? "en" : ""} laufen bald ab</p>
                   <p className="text-xs text-muted-foreground">Innerhalb 30 Tage</p>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+          {data.alerts.devicesWithUpdates > 0 && (
+            <Card className="border-amber-500/30 bg-amber-500/5">
+              <CardContent className="pt-4 pb-3 flex items-center gap-3">
+                <Download className="h-5 w-5 text-amber-500 shrink-0" />
+                <div>
+                  <p className="text-sm font-medium text-amber-500">{data.alerts.devicesWithUpdates} Gerät{data.alerts.devicesWithUpdates !== 1 ? "e" : ""} mit ausstehenden Updates</p>
+                  <p className="text-xs text-muted-foreground">Windows Updates verfügbar</p>
                 </div>
               </CardContent>
             </Card>

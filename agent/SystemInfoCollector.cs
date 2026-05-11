@@ -3,6 +3,7 @@ using System.Management;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Runtime.Versioning;
+using System.Text.Json;
 using Microsoft.Win32;
 
 namespace HackITSentry.Agent;
@@ -12,6 +13,7 @@ public class SystemInfoCollector
 {
     public SystemInfo Collect()
     {
+        var (pendingUpdatesCount, lastWindowsUpdateInstalled) = GetWindowsUpdateInfo();
         return new SystemInfo
         {
             Hostname = Environment.MachineName,
@@ -26,7 +28,11 @@ public class SystemInfoCollector
             NetworkAdapters = GetNetworkAdapters(),
             DiskDrives = GetDiskDrives(),
             InstalledSoftware = GetInstalledSoftware(),
-            RustDeskId = GetRustDeskId()
+            RustDeskId = GetRustDeskId(),
+            BiosInfoJson = GetBiosInfoJson(),
+            DefenderStatusJson = GetDefenderStatusJson(),
+            PendingUpdatesCount = pendingUpdatesCount,
+            LastWindowsUpdateInstalled = lastWindowsUpdateInstalled
         };
     }
 
@@ -253,6 +259,141 @@ public class SystemInfoCollector
         return result.DistinctBy(s => s.Name).OrderBy(s => s.Name).ToList();
     }
 
+    private static (int pendingCount, DateTime? lastInstalled) GetWindowsUpdateInfo()
+    {
+        int pendingCount = 0;
+        DateTime? lastInstalled = null;
+
+        try
+        {
+            // Count pending updates via COM (Microsoft.Update.Session)
+            var updateSessionType = Type.GetTypeFromProgID("Microsoft.Update.Session");
+            if (updateSessionType != null)
+            {
+                dynamic session = Activator.CreateInstance(updateSessionType)!;
+                dynamic searcher = session.CreateUpdateSearcher();
+                dynamic result = searcher.Search("IsInstalled=0 AND IsHidden=0 AND Type='Software'");
+                pendingCount = result.Updates.Count;
+            }
+        }
+        catch { }
+
+        try
+        {
+            // Last successful update from Registry
+            using var key = Registry.LocalMachine.OpenSubKey(
+                @"SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\Results\Install");
+            var raw = key?.GetValue("LastSuccessTime")?.ToString() ?? "";
+            if (!string.IsNullOrEmpty(raw) && DateTime.TryParse(raw, out var dt))
+                lastInstalled = dt.ToUniversalTime();
+        }
+        catch { }
+
+        return (pendingCount, lastInstalled);
+    }
+
+    private static string GetDefenderStatusJson()
+    {
+        try
+        {
+            // Installed AV products from SecurityCenter2
+            var avProducts = new List<object>();
+            try
+            {
+                using var searcher = new ManagementObjectSearcher(
+                    @"root\SecurityCenter2", "SELECT displayName, productState FROM AntiVirusProduct");
+                foreach (ManagementObject obj in searcher.Get())
+                {
+                    var name = obj["displayName"]?.ToString() ?? "";
+                    var state = Convert.ToUInt32(obj["productState"] ?? 0);
+                    // productState encoding: bits 12-15 = monitoring status, bits 4-7 = definition status
+                    var enabled = ((state >> 12) & 0xf) == 1;
+                    var upToDate = ((state >> 4) & 0xf) == 0;
+                    avProducts.Add(new { name, enabled, upToDate });
+                }
+            }
+            catch { }
+
+            // Defender-specific details via WMI (available on Win8+)
+            bool? rtpEnabled = null;
+            int? signatureAgeDays = null;
+            string? lastScanTime = null;
+            try
+            {
+                using var searcher = new ManagementObjectSearcher(
+                    @"root\Microsoft\Windows\Defender",
+                    "SELECT AMRunningMode, RealTimeProtectionEnabled, AntivirusSignatureAge, LastQuickScanEndTime FROM MSFT_MpComputerStatus");
+                foreach (ManagementObject obj in searcher.Get())
+                {
+                    rtpEnabled = (bool?)obj["RealTimeProtectionEnabled"];
+                    signatureAgeDays = obj["AntivirusSignatureAge"] != null
+                        ? Convert.ToInt32(obj["AntivirusSignatureAge"]) : (int?)null;
+                    var scanTime = obj["LastQuickScanEndTime"]?.ToString() ?? "";
+                    // CIM_DATETIME: "20230401120000.000000+000"
+                    if (scanTime.Length >= 14)
+                        lastScanTime = $"{scanTime[..4]}-{scanTime[4..6]}-{scanTime[6..8]}T{scanTime[8..10]}:{scanTime[10..12]}:{scanTime[12..14]}Z";
+                    break;
+                }
+            }
+            catch { }
+
+            return JsonSerializer.Serialize(new
+            {
+                avProducts,
+                realTimeProtectionEnabled = rtpEnabled,
+                signatureAgeDays,
+                lastScanTime
+            });
+        }
+        catch { return "{}"; }
+    }
+
+    private static string GetBiosInfoJson()
+    {
+        try
+        {
+            string biosVersion = "", biosDate = "", biosManufacturer = "";
+            using (var searcher = new ManagementObjectSearcher(
+                "SELECT SMBIOSBIOSVersion, ReleaseDate, Manufacturer FROM Win32_BIOS"))
+            {
+                foreach (ManagementObject obj in searcher.Get())
+                {
+                    biosVersion = obj["SMBIOSBIOSVersion"]?.ToString() ?? "";
+                    biosDate = obj["ReleaseDate"]?.ToString() ?? "";
+                    // ReleaseDate is CIM_DATETIME: "20230401000000.000000+000" → "2023-04-01"
+                    if (biosDate.Length >= 8)
+                        biosDate = $"{biosDate[..4]}-{biosDate[4..6]}-{biosDate[6..8]}";
+                    biosManufacturer = obj["Manufacturer"]?.ToString() ?? "";
+                    break;
+                }
+            }
+
+            string boardManufacturer = "", boardProduct = "", boardSerial = "";
+            using (var searcher = new ManagementObjectSearcher(
+                "SELECT Manufacturer, Product, SerialNumber FROM Win32_BaseBoard"))
+            {
+                foreach (ManagementObject obj in searcher.Get())
+                {
+                    boardManufacturer = obj["Manufacturer"]?.ToString() ?? "";
+                    boardProduct = obj["Product"]?.ToString() ?? "";
+                    boardSerial = obj["SerialNumber"]?.ToString() ?? "";
+                    break;
+                }
+            }
+
+            return JsonSerializer.Serialize(new
+            {
+                biosVersion,
+                biosDate,
+                biosManufacturer,
+                boardManufacturer,
+                boardProduct,
+                boardSerial
+            });
+        }
+        catch { return "{}"; }
+    }
+
     public static string GetRustDeskId()
     {
         // Primary: ask RustDesk directly via CLI — works regardless of profile/service mode
@@ -343,6 +484,10 @@ public record SystemInfo
     public List<DiskDriveInfo> DiskDrives { get; init; } = [];
     public List<SoftwareInfo> InstalledSoftware { get; init; } = [];
     public string RustDeskId { get; init; } = "";
+    public string BiosInfoJson { get; init; } = "{}";
+    public string DefenderStatusJson { get; init; } = "{}";
+    public int PendingUpdatesCount { get; init; }
+    public DateTime? LastWindowsUpdateInstalled { get; init; }
 }
 
 public record NetworkAdapterInfo(
