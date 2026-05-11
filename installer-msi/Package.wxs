@@ -4,7 +4,7 @@
   <Product Id="*"
            Name="HackIT Sentry Agent"
            Language="1033"
-           Version="1.0.13"
+           Version="1.0.22"
            Manufacturer="HackIT"
            UpgradeCode="A7F34C2E-8B91-4D56-9E32-1A5C8F720E3D">
 

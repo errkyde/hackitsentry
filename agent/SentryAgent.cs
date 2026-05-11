@@ -10,6 +10,7 @@ namespace HackITSentry.Agent;
 public class SentryAgent : BackgroundService
 {
     private readonly AgentHttpClient _http;
+    private readonly IHttpClientFactory _httpFactory;
     private readonly SystemInfoCollector _sysInfo;
     private readonly LicenseCollector _licenseCollector;
     private readonly IOptionsMonitor<AgentConfig> _config;
@@ -30,8 +31,12 @@ public class SentryAgent : BackgroundService
     // Runtime override for check-in interval (received from server, overrides appsettings)
     private int? _checkinIntervalOverride;
 
+    // Last successful check-in response — used by command handlers that need server settings
+    private CheckinResponse? _lastCheckinResponse;
+
     public SentryAgent(
         AgentHttpClient http,
+        IHttpClientFactory httpFactory,
         SystemInfoCollector sysInfo,
         LicenseCollector licenseCollector,
         IOptionsMonitor<AgentConfig> config,
@@ -39,6 +44,7 @@ public class SentryAgent : BackgroundService
         IConfiguration fullConfig)
     {
         _http = http;
+        _httpFactory = httpFactory;
         _sysInfo = sysInfo;
         _licenseCollector = licenseCollector;
         _config = config;
@@ -49,6 +55,18 @@ public class SentryAgent : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation("HackIT Sentry Agent starting (v{Version})...", CurrentVersion);
+
+        var resolvedUrl = SecureStore.LoadServerUrl()
+            ?? RegistryConfig.GetServerUrl()
+            ?? _fullConfig["SentryAgent:ServerUrl"];
+
+        if (string.IsNullOrWhiteSpace(resolvedUrl))
+        {
+            _logger.LogCritical("ServerUrl ist nicht konfiguriert. Agent muss via Installer installiert werden. Dienst wird beendet.");
+            return;
+        }
+
+        _logger.LogInformation("Server-URL: {Url}", resolvedUrl);
 
         CleanupLegacyState();
 
@@ -252,7 +270,11 @@ public class SentryAgent : BackgroundService
                 installDate = s.InstallDate
             }),
             rustDeskId = info.RustDeskId,
-            agentVersion = CurrentVersion
+            agentVersion = CurrentVersion,
+            biosInfoJson = info.BiosInfoJson,
+            defenderStatusJson = info.DefenderStatusJson,
+            pendingUpdatesCount = info.PendingUpdatesCount,
+            lastWindowsUpdateInstalled = info.LastWindowsUpdateInstalled
         };
 
         var response = await _http.CheckinAsync(payload);
@@ -261,6 +283,8 @@ public class SentryAgent : BackgroundService
             _logger.LogWarning("Check-in failed");
             return;
         }
+
+        _lastCheckinResponse = response;
 
         _logger.LogInformation("Check-in successful. LicenseRequested={LicReq}, HasCommands={HasCmds}, RustDeskAutoInstall={RdAuto}, RustDeskRelay={RdRelay}, RustDeskDownloadUrl={RdUrl}",
             response.LicenseRequested, response.HasPendingCommands,
@@ -303,10 +327,11 @@ public class SentryAgent : BackgroundService
         // Version is included in the key so any agent update triggers a fresh reconfiguration
         if (!string.IsNullOrEmpty(response.RustDeskRelayServer) && IsRustDeskInstalled())
         {
-            var configKey = $"{response.RustDeskRelayServer}|{response.RustDeskPublicKey}|v{CurrentVersion}";
+            var optionsFingerprint = OptionsFingerprint(response.RustDeskDeviceOptions);
+            var configKey = $"{response.RustDeskRelayServer}|{response.RustDeskPublicKey}|{optionsFingerprint}|fav{response.RustDeskForceApplyVersion ?? 0}|v{CurrentVersion}";
             if (state.RustDeskConfiguredFor != configKey)
             {
-                ConfigureRustDesk(response.RustDeskRelayServer, response.RustDeskPublicKey ?? "");
+                ConfigureRustDesk(response.RustDeskRelayServer, response.RustDeskPublicKey ?? "", response.RustDeskDeviceOptions);
                 state.RustDeskConfiguredFor = configKey;
                 SaveState(state);
                 rustDeskServiceNeeded = true; // restart so RustDesk picks up new config
@@ -444,13 +469,141 @@ public class SentryAgent : BackgroundService
                 case "InitRustDesk":
                 {
                     _logger.LogInformation("RustDesk initialisation requested via command.");
-                    var state = LoadState() ?? new AgentState();
-                    // Clear configured-for so the next check-in reconfigures relay + key
-                    state.RustDeskConfiguredFor = "";
-                    SaveState(state);
-                    // Trigger immediate check-in (handles install + configure)
-                    _forceCheckinCts.Cancel();
-                    return (true, "RustDesk initialisation triggered — will install/configure at next check-in.");
+                    var resp = _lastCheckinResponse;
+                    if (resp == null)
+                        return (false, "No check-in data available yet — try again in a moment.");
+
+                    bool serviceNeeded = false;
+                    bool justInstalled = false;
+
+                    if (!IsRustDeskInstalled())
+                    {
+                        _logger.LogInformation("RustDesk not installed — installing now...");
+                        await InstallRustDeskAsync(resp.RustDeskDownloadUrl);
+                        justInstalled = true;
+                        serviceNeeded = true;
+                    }
+
+                    if (!string.IsNullOrEmpty(resp.RustDeskRelayServer) && IsRustDeskInstalled())
+                    {
+                        var state = LoadState() ?? new AgentState();
+                        ConfigureRustDesk(resp.RustDeskRelayServer, resp.RustDeskPublicKey ?? "", resp.RustDeskDeviceOptions);
+                        var optionsFingerprint = OptionsFingerprint(resp.RustDeskDeviceOptions);
+                        state.RustDeskConfiguredFor = $"{resp.RustDeskRelayServer}|{resp.RustDeskPublicKey}|{optionsFingerprint}|fav{resp.RustDeskForceApplyVersion ?? 0}|v{CurrentVersion}";
+                        SaveState(state);
+                        serviceNeeded = true;
+                        _logger.LogInformation("RustDesk configured via command.");
+                    }
+
+                    if (serviceNeeded)
+                    {
+                        try
+                        {
+                            Process.Start(new ProcessStartInfo("sc", "stop RustDesk") { CreateNoWindow = true, UseShellExecute = false });
+                            await Task.Delay(1500);
+                            Process.Start(new ProcessStartInfo("sc", "start RustDesk") { CreateNoWindow = true, UseShellExecute = false });
+                            _logger.LogInformation("RustDesk service started/restarted.");
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "Could not start/restart RustDesk service.");
+                        }
+                    }
+
+                    var resultMsg = justInstalled
+                        ? "RustDesk installed and configured successfully."
+                        : "RustDesk configuration updated successfully.";
+                    return (true, resultMsg);
+                }
+
+                case "DeployPackage":
+                {
+                    if (string.IsNullOrWhiteSpace(cmd.Parameters))
+                        return (false, "No package info provided");
+
+                    DeployPackageParams? pkg = null;
+                    try { pkg = JsonSerializer.Deserialize<DeployPackageParams>(cmd.Parameters); }
+                    catch { return (false, "Invalid package parameters"); }
+                    if (pkg == null) return (false, "Invalid package parameters");
+
+                    switch (pkg.Type?.ToLower())
+                    {
+                        case "winget":
+                        {
+                            var psi = new ProcessStartInfo("winget",
+                                $"install {pkg.InstallCmd} --silent --accept-package-agreements --accept-source-agreements")
+                            {
+                                RedirectStandardOutput = true,
+                                RedirectStandardError = true,
+                                UseShellExecute = false,
+                                CreateNoWindow = true
+                            };
+                            using var proc = Process.Start(psi);
+                            if (proc == null) return (false, "Failed to start winget");
+                            var output = await proc.StandardOutput.ReadToEndAsync();
+                            var error = await proc.StandardError.ReadToEndAsync();
+                            await proc.WaitForExitAsync();
+                            var result = (output + error).Trim();
+                            return (proc.ExitCode == 0, result.Length > 1000 ? result[..1000] : result);
+                        }
+
+                        case "script":
+                        {
+                            var tempFile = Path.Combine(Path.GetTempPath(), $"deploy_{Guid.NewGuid():N}.ps1");
+                            await File.WriteAllTextAsync(tempFile, pkg.InstallCmd);
+                            var psi = new ProcessStartInfo("powershell.exe",
+                                $"-NonInteractive -ExecutionPolicy Bypass -File \"{tempFile}\"")
+                            {
+                                RedirectStandardOutput = true,
+                                RedirectStandardError = true,
+                                UseShellExecute = false,
+                                CreateNoWindow = true
+                            };
+                            using var proc = Process.Start(psi);
+                            if (proc == null) return (false, "Failed to start PowerShell");
+                            var output = await proc.StandardOutput.ReadToEndAsync();
+                            var error = await proc.StandardError.ReadToEndAsync();
+                            await proc.WaitForExitAsync();
+                            File.Delete(tempFile);
+                            var result = (output + error).Trim();
+                            return (proc.ExitCode == 0, result.Length > 1000 ? result[..1000] : result);
+                        }
+
+                        default:
+                            return (false, $"Unknown package type: {pkg.Type}");
+                    }
+                }
+
+                case "InstallUpdates":
+                {
+                    _logger.LogInformation("Triggering Windows Update install...");
+                    try
+                    {
+                        var proc = Process.Start(new ProcessStartInfo("UsoClient.exe", "StartInstall")
+                        {
+                            UseShellExecute = false,
+                            CreateNoWindow = true,
+                        });
+                        proc?.WaitForExit(5000);
+                        return (true, "Windows Update install triggered. Updates will install in the background.");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "UsoClient failed, trying wuauclt...");
+                        try
+                        {
+                            Process.Start(new ProcessStartInfo("wuauclt.exe", "/detectnow /updatenow")
+                            {
+                                UseShellExecute = false,
+                                CreateNoWindow = true,
+                            });
+                            return (true, "Windows Update triggered via wuauclt.");
+                        }
+                        catch (Exception ex2)
+                        {
+                            return (false, $"Could not trigger Windows Update: {ex2.Message}");
+                        }
+                    }
                 }
 
                 case "UpdateServerUrl":
@@ -534,8 +687,15 @@ public class SentryAgent : BackgroundService
         {
             _logger.LogInformation("Downloading agent update v{Version} from {Url}...", newVersion, downloadUrl);
 
-            using var http = new System.Net.Http.HttpClient();
+            // Use the registered "SentryServer" client so IgnoreCertificateErrors is respected
+            var http = _httpFactory.CreateClient("SentryServer");
             http.Timeout = TimeSpan.FromMinutes(10);
+            var apiKey = SecureStore.LoadApiKey();
+            if (!string.IsNullOrEmpty(apiKey))
+            {
+                http.DefaultRequestHeaders.Remove("X-Api-Key");
+                http.DefaultRequestHeaders.Add("X-Api-Key", apiKey);
+            }
 
             var updateDir = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
@@ -810,9 +970,44 @@ public class SentryAgent : BackgroundService
         }
     }
 
-    private void ConfigureRustDesk(string host, string publicKey)
+    private void ApplyRustDeskPassword(string password)
+    {
+        var exePaths = new[]
+        {
+            @"C:\Program Files\RustDesk\rustdesk.exe",
+            @"C:\Program Files (x86)\RustDesk\rustdesk.exe",
+        };
+        foreach (var exe in exePaths.Where(File.Exists))
+        {
+            try
+            {
+                using var proc = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(exe)
+                {
+                    Arguments = $"--password {password}",
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                });
+                proc?.WaitForExit(5000);
+                _logger.LogInformation("RustDesk permanent password set via {Exe}", exe);
+                return;
+            }
+            catch (Exception ex) { _logger.LogWarning(ex, "Could not set RustDesk password via {Exe}", exe); }
+        }
+        _logger.LogWarning("RustDesk permanent password: no rustdesk.exe found to apply password.");
+    }
+
+    private void ConfigureRustDesk(string host, string publicKey, Dictionary<string, string>? extraOptions = null)
     {
         bool configured = false;
+
+        // Extract permanent-password before writing TOML — applied via rustdesk.exe CLI, not stored in file
+        string? permanentPassword = null;
+        if (extraOptions != null && extraOptions.TryGetValue("permanent-password", out var pwd) && !string.IsNullOrEmpty(pwd))
+        {
+            permanentPassword = pwd;
+            extraOptions = new Dictionary<string, string>(extraOptions);
+            extraOptions.Remove("permanent-password");
+        }
 
         // ── RustDesk.toml (flat format, backwards compat) ──────────────
         foreach (var path in RustDeskTomlPaths)
@@ -848,11 +1043,22 @@ public class SentryAgent : BackgroundService
                 // Root-level rendezvous_server (legacy field still read by some versions)
                 SetRootField(lines, "rendezvous_server", host);
 
-                // [options] section: custom-rendezvous-server, relay-server, key
+                // [options] section: server settings + allow-remote-config-modification + extra options
                 SetSectionField(lines, "options", "custom-rendezvous-server", host);
                 SetSectionField(lines, "options", "relay-server", host);
                 if (!string.IsNullOrEmpty(publicKey))
                     SetSectionField(lines, "options", "key", publicKey);
+
+                // Default: allow remote config modification (can be overridden via options)
+                if (extraOptions == null || !extraOptions.ContainsKey("allow-remote-config-modification"))
+                    SetSectionField(lines, "options", "allow-remote-config-modification", "Y");
+
+                // Apply per-device / global option overrides from server
+                if (extraOptions != null)
+                {
+                    foreach (var (optKey, optVal) in extraOptions)
+                        SetSectionField(lines, "options", optKey, optVal);
+                }
 
                 File.WriteAllLines(path, lines);
                 _logger.LogInformation("RustDesk2.toml written at {Path}", path);
@@ -863,6 +1069,15 @@ public class SentryAgent : BackgroundService
 
         if (!configured)
             _logger.LogWarning("RustDesk configuration failed — no writable TOML path found.");
+
+        if (permanentPassword != null)
+            ApplyRustDeskPassword(permanentPassword);
+    }
+
+    private static string OptionsFingerprint(Dictionary<string, string>? options)
+    {
+        if (options == null || options.Count == 0) return "";
+        return string.Join(",", options.OrderBy(k => k.Key).Select(kv => $"{kv.Key}={kv.Value}"));
     }
 
     /// <summary>Sets or adds a key=value at the root level (before any [section]).</summary>
@@ -949,6 +1164,8 @@ public class SentryAgent : BackgroundService
         }
     }
 }
+
+public record DeployPackageParams(string? Type, string? InstallCmd);
 
 public class AgentState
 {
