@@ -23,7 +23,8 @@ public class AlertEmailService
         {
             var message = new MimeMessage();
             message.From.Add(MailboxAddress.Parse(_settings.EmailFrom));
-            message.To.Add(MailboxAddress.Parse(_settings.EmailTo));
+            foreach (var addr in _settings.EmailToList)
+                message.To.Add(MailboxAddress.Parse(addr));
             message.Subject = subject;
 
             var builder = new BodyBuilder { HtmlBody = htmlBody };

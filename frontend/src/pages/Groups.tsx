@@ -36,6 +36,7 @@ const DEFAULT_NOTIF: NotifState = {
 };
 
 export function Groups() {
+  const isAdmin = localStorage.getItem("role") === "Admin";
   const [groupList, setGroupList] = useState<Group[]>([]);
   const [loading, setLoading] = useState(true);
   const [dialog, setDialog] = useState<{ mode: "create" | "edit"; group?: Group } | null>(null);
@@ -106,7 +107,11 @@ export function Groups() {
   };
 
   const openRustDesk = (group: Group) => {
-    setRdOptions({});
+    let opts: Record<string, string> = {};
+    if (group.rustDeskOptionsJson) {
+      try { opts = JSON.parse(group.rustDeskOptionsJson); } catch { /* ignore */ }
+    }
+    setRdOptions(opts);
     setRdSaved(false);
     setRdGroup(group);
   };
@@ -183,10 +188,12 @@ export function Groups() {
           <h1 className="text-xl font-semibold">Gruppen</h1>
           <p className="text-sm text-muted-foreground">{groupList.length} Gruppen</p>
         </div>
-        <Button size="sm" onClick={openCreate}>
-          <Plus className="h-4 w-4 mr-1.5" />
-          Neue Gruppe
-        </Button>
+        {isAdmin && (
+          <Button size="sm" onClick={openCreate}>
+            <Plus className="h-4 w-4 mr-1.5" />
+            Neue Gruppe
+          </Button>
+        )}
       </div>
 
       {loading ? (
@@ -195,10 +202,12 @@ export function Groups() {
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <Layers className="h-10 w-10 text-muted-foreground/30 mb-3" />
           <p className="text-muted-foreground">Noch keine Gruppen erstellt</p>
-          <Button size="sm" variant="outline" className="mt-4" onClick={openCreate}>
-            <Plus className="h-3.5 w-3.5 mr-1.5" />
-            Erste Gruppe erstellen
-          </Button>
+          {isAdmin && (
+            <Button size="sm" variant="outline" className="mt-4" onClick={openCreate}>
+              <Plus className="h-3.5 w-3.5 mr-1.5" />
+              Erste Gruppe erstellen
+            </Button>
+          )}
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -215,20 +224,22 @@ export function Groups() {
                     )}
                     <CardTitle className="text-base">{group.name}</CardTitle>
                   </div>
-                  <div className="flex gap-1">
-                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(group)} title="Bearbeiten">
-                      <Pencil className="h-3.5 w-3.5" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8 hover:text-destructive"
-                      onClick={() => setDeleteConfirm(group)}
-                      title="Löschen"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
+                  {isAdmin && (
+                    <div className="flex gap-1">
+                      <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(group)} title="Bearbeiten">
+                        <Pencil className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 hover:text-destructive"
+                        onClick={() => setDeleteConfirm(group)}
+                        title="Löschen"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  )}
                 </div>
               </CardHeader>
               <CardContent>
@@ -259,28 +270,30 @@ export function Groups() {
                     );
                   } catch { return null; }
                 })()}
-                <div className="flex gap-2 flex-wrap">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7 text-xs"
-                    onClick={() => openRustDesk(group)}
-                    title="RustDesk-Optionen auf alle Geräte dieser Gruppe anwenden"
-                  >
-                    <Monitor className="h-3.5 w-3.5 mr-1" />
-                    RustDesk sync
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7 text-xs"
-                    onClick={() => openNotif(group)}
-                    title="Benachrichtigungen für alle Geräte dieser Gruppe anpassen"
-                  >
-                    <Bell className="h-3.5 w-3.5 mr-1" />
-                    Benachrichtigungen
-                  </Button>
-                </div>
+                {isAdmin && (
+                  <div className="flex gap-2 flex-wrap">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs"
+                      onClick={() => openRustDesk(group)}
+                      title="RustDesk-Optionen auf alle Geräte dieser Gruppe anwenden"
+                    >
+                      <Monitor className="h-3.5 w-3.5 mr-1" />
+                      RustDesk sync
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs"
+                      onClick={() => openNotif(group)}
+                      title="Benachrichtigungen für alle Geräte dieser Gruppe anpassen"
+                    >
+                      <Bell className="h-3.5 w-3.5 mr-1" />
+                      Benachrichtigungen
+                    </Button>
+                  </div>
+                )}
               </CardContent>
             </Card>
           ))}

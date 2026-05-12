@@ -211,7 +211,7 @@ export function Settings() {
   // --- LDAP ---
   const [ldap, setLdap] = useState<LdapSettings>({
     enabled: false, host: "", port: 389, transport: "TCP" as const, ignoreCertificateErrors: false,
-    baseDn: "", bindDn: "", hasBindPassword: false,
+    baseDn: "", bindDn: "", hasBindPassword: false, hasCaCertificate: false,
     userSearchBase: "", userFilter: "(&(objectClass=user)(|(sAMAccountName={0})(userPrincipalName={0})))",
     adminGroup: "", viewerGroup: "", requireGroup: false, useNestedGroups: false,
   });
@@ -220,6 +220,10 @@ export function Settings() {
   const [ldapTestMsg, setLdapTestMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [ldapSaving, setLdapSaving] = useState(false);
   const [ldapTesting, setLdapTesting] = useState(false);
+  const [ldapCaPem, setLdapCaPem] = useState("");
+  const [ldapCaMsg, setLdapCaMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [ldapCaUploading, setLdapCaUploading] = useState(false);
+  const [ldapCaDeleting, setLdapCaDeleting] = useState(false);
 
   // --- Agent Versions ---
   const [agentVers, setAgentVers] = useState<AgentVersion[]>([]);
@@ -1201,7 +1205,8 @@ Start-Process "$env:TEMP\\HackITSentry-Setup.exe" -Verb RunAs -Wait`}</pre>
                       </div>
                       <div className="space-y-1.5">
                         <Label>Empfänger (To)</Label>
-                        <Input placeholder="admin@example.com" value={emailForm.to} onChange={e => setEmailForm(f => ({ ...f, to: e.target.value }))} />
+                        <Input placeholder="admin@example.com, it@example.com" value={emailForm.to} onChange={e => setEmailForm(f => ({ ...f, to: e.target.value }))} />
+                        <p className="text-xs text-muted-foreground">Mehrere Adressen kommagetrennt eingeben</p>
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
@@ -1670,17 +1675,87 @@ Start-Process "$env:TEMP\\HackITSentry-Setup.exe" -Verb RunAs -Wait`}</pre>
                   </div>
 
                   {ldap.transport !== "TCP" && (
-                    <div className="flex items-center gap-3">
-                      <input
-                        id="ldap-ignore-cert"
-                        type="checkbox"
-                        className="h-4 w-4 rounded border-border"
-                        checked={ldap.ignoreCertificateErrors}
-                        onChange={e => setLdap(p => ({ ...p, ignoreCertificateErrors: e.target.checked }))}
-                      />
-                      <Label htmlFor="ldap-ignore-cert" className="font-normal cursor-pointer text-amber-600 dark:text-amber-400">
-                        Zertifikatsfehler ignorieren (selbstsignierte Zertifikate)
-                      </Label>
+                    <div className="space-y-3">
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <Label>CA-Zertifikat <span className="text-xs text-muted-foreground">(PEM, für selbst signierte / interne CAs)</span></Label>
+                          {ldap.hasCaCertificate && (
+                            <span className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400 font-medium">
+                              <CheckCircle2 className="h-3.5 w-3.5" /> gespeichert
+                            </span>
+                          )}
+                        </div>
+                        <textarea
+                          className="w-full min-h-[100px] rounded-md border border-border bg-background px-3 py-2 text-xs font-mono resize-y placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                          placeholder={"-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"}
+                          value={ldapCaPem}
+                          onChange={e => { setLdapCaPem(e.target.value); setLdapCaMsg(null); }}
+                        />
+                        <div className="flex items-center gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={ldapCaUploading || !ldapCaPem.trim()}
+                            onClick={async () => {
+                              setLdapCaMsg(null);
+                              setLdapCaUploading(true);
+                              try {
+                                const res = await settings.uploadLdapCaCert(ldapCaPem.trim());
+                                setLdapCaMsg({ ok: true, text: res.message });
+                                setLdapCaPem("");
+                                setLdap(p => ({ ...p, hasCaCertificate: true }));
+                              } catch (err: unknown) {
+                                setLdapCaMsg({ ok: false, text: err instanceof Error ? err.message : "Fehler beim Hochladen." });
+                              } finally {
+                                setLdapCaUploading(false);
+                              }
+                            }}
+                          >
+                            {ldapCaUploading ? "Hochladen..." : "Zertifikat hochladen"}
+                          </Button>
+                          {ldap.hasCaCertificate && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="text-destructive hover:text-destructive"
+                              disabled={ldapCaDeleting}
+                              onClick={async () => {
+                                setLdapCaMsg(null);
+                                setLdapCaDeleting(true);
+                                try {
+                                  const res = await settings.deleteLdapCaCert();
+                                  setLdapCaMsg({ ok: true, text: res.message });
+                                  setLdap(p => ({ ...p, hasCaCertificate: false }));
+                                } catch (err: unknown) {
+                                  setLdapCaMsg({ ok: false, text: err instanceof Error ? err.message : "Fehler beim Entfernen." });
+                                } finally {
+                                  setLdapCaDeleting(false);
+                                }
+                              }}
+                            >
+                              {ldapCaDeleting ? "Entfernen..." : "Zertifikat entfernen"}
+                            </Button>
+                          )}
+                        </div>
+                        {ldapCaMsg && (
+                          <div className={cn("flex items-center gap-2 text-sm", ldapCaMsg.ok ? "text-emerald-500" : "text-destructive")}>
+                            {ldapCaMsg.ok ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
+                            {ldapCaMsg.text}
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <input
+                          id="ldap-ignore-cert"
+                          type="checkbox"
+                          className="h-4 w-4 rounded border-border"
+                          checked={ldap.ignoreCertificateErrors}
+                          onChange={e => setLdap(p => ({ ...p, ignoreCertificateErrors: e.target.checked }))}
+                        />
+                        <Label htmlFor="ldap-ignore-cert" className="font-normal cursor-pointer text-amber-600 dark:text-amber-400">
+                          Zertifikatsfehler ignorieren (kein Zertifikat hinterlegt)
+                        </Label>
+                      </div>
                     </div>
                   )}
 

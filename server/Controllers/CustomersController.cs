@@ -46,6 +46,7 @@ public class CustomersController : ControllerBase
     }
 
     [HttpPost]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> Create([FromBody] CustomerRequest request)
     {
         var customer = new Customer
@@ -59,6 +60,7 @@ public class CustomersController : ControllerBase
     }
 
     [HttpPut("{id:guid}")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> Update(Guid id, [FromBody] CustomerRequest request)
     {
         var customer = await _db.Customers.FindAsync(id);
@@ -72,6 +74,7 @@ public class CustomersController : ControllerBase
     }
 
     [HttpDelete("{id:guid}")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> Delete(Guid id)
     {
         var customer = await _db.Customers.FindAsync(id);

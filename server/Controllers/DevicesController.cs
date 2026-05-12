@@ -198,6 +198,7 @@ public class DevicesController : ControllerBase
 
     // PATCH /api/devices/{id}
     [HttpPatch("{id:guid}")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> PatchDevice(Guid id, [FromBody] PatchDeviceRequest request)
     {
         var device = await _db.Devices.FindAsync(id);
@@ -455,6 +456,7 @@ public class DevicesController : ControllerBase
 
     // POST /api/devices/{id}/notes
     [HttpPost("{id:guid}/notes")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> AddNote(Guid id, [FromBody] AddNoteRequest request)
     {
         if (!await _db.Devices.AnyAsync(d => d.Id == id))
@@ -478,6 +480,7 @@ public class DevicesController : ControllerBase
 
     // DELETE /api/devices/{id}/notes/{noteId}
     [HttpDelete("{id:guid}/notes/{noteId:guid}")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> DeleteNote(Guid id, Guid noteId)
     {
         var note = await _db.DeviceNotes.FirstOrDefaultAsync(n => n.Id == noteId && n.DeviceId == id);
@@ -656,6 +659,7 @@ public class DevicesController : ControllerBase
 
     // PATCH /api/devices/{id}/rustdesk-options
     [HttpPatch("{id:guid}/rustdesk-options")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> PatchRustDeskOptions(Guid id, [FromBody] RustDeskOptionsRequest request)
     {
         var device = await _db.Devices.FindAsync(id);
@@ -674,6 +678,7 @@ public class DevicesController : ControllerBase
 
     // POST /api/devices/{id}/acknowledge-disk-alert
     [HttpPost("{id:guid}/acknowledge-disk-alert")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> AcknowledgeDiskAlert(Guid id)
     {
         var device = await _db.Devices

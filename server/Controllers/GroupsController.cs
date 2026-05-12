@@ -31,6 +31,7 @@ public class GroupsController : ControllerBase
                 g.Color,
                 g.CreatedAt,
                 g.NotificationSettingsJson,
+                g.RustDeskOptionsJson,
                 DeviceCount = g.Devices.Count
             })
             .OrderBy(g => g.Name)
@@ -49,6 +50,7 @@ public class GroupsController : ControllerBase
     }
 
     [HttpPost]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> Create([FromBody] GroupRequest request)
     {
         var group = new DeviceGroup
@@ -63,6 +65,7 @@ public class GroupsController : ControllerBase
     }
 
     [HttpPut("{id:guid}")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> Update(Guid id, [FromBody] GroupRequest request)
     {
         var group = await _db.Groups.FindAsync(id);
@@ -77,6 +80,7 @@ public class GroupsController : ControllerBase
     }
 
     [HttpDelete("{id:guid}")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> Delete(Guid id)
     {
         var group = await _db.Groups.FindAsync(id);
@@ -92,6 +96,7 @@ public class GroupsController : ControllerBase
     // Applies RustDesk options to all devices in the group.
     // Pass null options to clear per-device overrides.
     [HttpPost("{id:guid}/sync-rustdesk")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> SyncRustDesk(Guid id, [FromBody] SyncRustDeskRequest req)
     {
         var devices = await _db.Devices.Where(d => d.GroupId == id).ToListAsync();
@@ -105,6 +110,9 @@ public class GroupsController : ControllerBase
         foreach (var device in devices)
             device.RustDeskOptionsJson = json;
 
+        var group = await _db.Groups.FindAsync(id);
+        if (group != null) group.RustDeskOptionsJson = json;
+
         await _db.SaveChangesAsync();
         return Ok(new { updated = devices.Count });
     }
@@ -112,6 +120,7 @@ public class GroupsController : ControllerBase
     // POST /api/groups/{id}/sync-notifications
     // Upserts DeviceNotificationOverride for all devices in the group.
     [HttpPost("{id:guid}/sync-notifications")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> SyncNotifications(Guid id, [FromBody] GroupNotificationRequest req)
     {
         var deviceIds = await _db.Devices
@@ -172,6 +181,7 @@ public class GroupsController : ControllerBase
     // DELETE /api/groups/{id}/sync-notifications
     // Removes all DeviceNotificationOverrides for devices in the group (reset to global defaults).
     [HttpDelete("{id:guid}/sync-notifications")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> ClearNotifications(Guid id)
     {
         var deviceIds = await _db.Devices

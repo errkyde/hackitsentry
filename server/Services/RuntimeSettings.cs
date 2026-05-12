@@ -59,9 +59,13 @@ public class RuntimeSettings
     public bool LdapRequireGroup { get; set; } = false;
     public bool LdapIgnoreCertificateErrors { get; set; } = false;
     public bool LdapUseNestedGroups { get; set; } = false;
+    public string LdapCaCertificate { get; set; } = "";
+
+    public List<string> EmailToList =>
+        (EmailTo ?? "").Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
 
     public bool IsEmailConfigured =>
-        !string.IsNullOrWhiteSpace(EmailHost) && !string.IsNullOrWhiteSpace(EmailTo);
+        !string.IsNullOrWhiteSpace(EmailHost) && EmailToList.Count > 0;
 
     /// <summary>Load defaults from IConfiguration (env vars / appsettings).</summary>
     public void LoadFromConfig(IConfiguration config)
@@ -127,6 +131,7 @@ public class RuntimeSettings
         if (d.TryGetValue("Ldap:RequireGroup", out var ldapRg) && bool.TryParse(ldapRg, out var ldapR)) LdapRequireGroup = ldapR;
         if (d.TryGetValue("Ldap:IgnoreCertificateErrors", out var ldapIgnoreCert) && bool.TryParse(ldapIgnoreCert, out var ldapIc)) LdapIgnoreCertificateErrors = ldapIc;
         if (d.TryGetValue("Ldap:UseNestedGroups", out var ldapNested) && bool.TryParse(ldapNested, out var ldapNg)) LdapUseNestedGroups = ldapNg;
+        if (d.TryGetValue("Ldap:CaCertificate", out var ldapCa) && !string.IsNullOrEmpty(ldapCa)) LdapCaCertificate = ldapCa;
     }
 
     public Dictionary<string, string> RustDeskToDbEntries() => new()

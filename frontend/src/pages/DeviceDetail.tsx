@@ -3,7 +3,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import {
   ArrowLeft, Cpu, Globe, HardDrive, Package, Key, Save, RefreshCw,
   Trash2, Activity, StickyNote, Terminal, Plus, Send, CheckCircle2, Monitor, Bell, BellOff, WifiOff,
-  ShieldCheck, ShieldAlert, ShieldOff, Download, Tag, ScrollText
+  ShieldCheck, ShieldAlert, ShieldOff, Download, Tag, ScrollText, ChevronDown
 } from "lucide-react";
 import {
   devices, customers, groups, agentVersions, customFields, scriptTemplates,
@@ -62,7 +62,6 @@ const COMMAND_TYPES = [
   { value: "InitRustDesk", label: "RustDesk initialisieren" },
   { value: "InstallUpdates", label: "Windows Updates installieren" },
   { value: "ForceUpdate", label: "Agent-Update erzwingen" },
-  { value: "GetEventLogs", label: "Ereignisprotokoll abrufen" },
 ];
 
 const STATUS_COLORS: Record<string, string> = {
@@ -227,6 +226,7 @@ function PatchCard({
 export function DeviceDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const isAdmin = localStorage.getItem("role") === "Admin";
   const [device, setDevice] = useState<DeviceDetailType | null>(null);
   const [software, setSoftware] = useState<Software[]>([]);
   const [license, setLicense] = useState<LicenseInfo | null>(null);
@@ -275,8 +275,6 @@ export function DeviceDetail() {
   const [latestAgentDownloadUrl, setLatestAgentDownloadUrl] = useState("");
 
   // Event log dialog
-  const [logDialogOpen, setLogDialogOpen] = useState(false);
-  const [logDialogContent, setLogDialogContent] = useState("");
 
   // License expiry state
   const [expiryInput, setExpiryInput] = useState("");
@@ -301,6 +299,7 @@ export function DeviceDetail() {
   const [fieldValues, setFieldValues] = useState<CustomFieldWithValue[]>([]);
   const [fieldEdits, setFieldEdits] = useState<Record<string, string>>({});
   const [fieldSaving, setFieldSaving] = useState(false);
+  const [expandedEventLogIdx, setExpandedEventLogIdx] = useState<number | null>(null);
 
   const loadData = (showLoading = false) => {
     if (!id) return;
@@ -602,24 +601,28 @@ export function DeviceDetail() {
                 RustDesk
               </Button>
             )}
-            <Button
-              variant="ghost"
-              size="sm"
-              className="text-muted-foreground hover:text-destructive"
-              onClick={() => setUninstallDialog(true)}
-            >
-              <Trash2 className="h-4 w-4 mr-1.5" />
-              Deinstallieren
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="text-muted-foreground hover:text-destructive"
-              onClick={() => setRemoveDialog(true)}
-            >
-              <Trash2 className="h-4 w-4 mr-1.5" />
-              Aus Sentry entfernen
-            </Button>
+            {isAdmin && (
+              <>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-muted-foreground hover:text-destructive"
+                  onClick={() => setUninstallDialog(true)}
+                >
+                  <Trash2 className="h-4 w-4 mr-1.5" />
+                  Deinstallieren
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-muted-foreground hover:text-destructive"
+                  onClick={() => setRemoveDialog(true)}
+                >
+                  <Trash2 className="h-4 w-4 mr-1.5" />
+                  Aus Sentry entfernen
+                </Button>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -638,6 +641,7 @@ export function DeviceDetail() {
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               placeholder="z.B. Empfang-PC"
+              readOnly={!isAdmin}
             />
           </div>
           <div className="space-y-1.5">
@@ -680,12 +684,14 @@ export function DeviceDetail() {
               className="font-mono"
             />
           </div>
-          <div className="sm:col-span-4 flex justify-end">
-            <Button size="sm" onClick={handleSave} disabled={saving}>
-              <Save className="h-3.5 w-3.5 mr-1.5" />
-              {saving ? "Speichern..." : "Speichern"}
-            </Button>
-          </div>
+          {isAdmin && (
+            <div className="sm:col-span-4 flex justify-end">
+              <Button size="sm" onClick={handleSave} disabled={saving}>
+                <Save className="h-3.5 w-3.5 mr-1.5" />
+                {saving ? "Speichern..." : "Speichern"}
+              </Button>
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -1230,26 +1236,30 @@ export function DeviceDetail() {
         <TabsContent value="notes">
           <Card>
             <CardContent className="pt-6 space-y-4">
-              <div className="flex gap-2">
-                <Textarea
-                  placeholder="Neue Notiz hinzufügen..."
-                  value={newNote}
-                  onChange={e => setNewNote(e.target.value)}
-                  className="min-h-[80px] resize-none"
-                  onKeyDown={e => {
-                    if (e.key === "Enter" && e.ctrlKey) handleAddNote();
-                  }}
-                />
-                <Button
-                  size="sm"
-                  onClick={handleAddNote}
-                  disabled={noteLoading || !newNote.trim()}
-                  className="self-end"
-                >
-                  <Send className="h-3.5 w-3.5" />
-                </Button>
-              </div>
-              <p className="text-xs text-muted-foreground">Strg+Enter zum Senden</p>
+              {isAdmin && (
+                <>
+                  <div className="flex gap-2">
+                    <Textarea
+                      placeholder="Neue Notiz hinzufügen..."
+                      value={newNote}
+                      onChange={e => setNewNote(e.target.value)}
+                      className="min-h-[80px] resize-none"
+                      onKeyDown={e => {
+                        if (e.key === "Enter" && e.ctrlKey) handleAddNote();
+                      }}
+                    />
+                    <Button
+                      size="sm"
+                      onClick={handleAddNote}
+                      disabled={noteLoading || !newNote.trim()}
+                      className="self-end"
+                    >
+                      <Send className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground">Strg+Enter zum Senden</p>
+                </>
+              )}
 
               {notes.length === 0 ? (
                 <p className="text-sm text-muted-foreground">Noch keine Notizen vorhanden.</p>
@@ -1264,14 +1274,16 @@ export function DeviceDetail() {
                             {new Date(note.createdAt).toLocaleString("de-DE")}
                           </span>
                         </div>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-6 w-6 hover:text-destructive"
-                          onClick={() => handleDeleteNote(note.id)}
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </Button>
+                        {isAdmin && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-6 w-6 hover:text-destructive"
+                            onClick={() => handleDeleteNote(note.id)}
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
+                        )}
                       </div>
                       <p className="text-sm whitespace-pre-wrap">{note.content}</p>
                     </div>
@@ -1415,17 +1427,7 @@ export function DeviceDetail() {
                           </td>
                           <td className="px-3 py-2.5 text-xs text-muted-foreground max-w-[200px]">
                             {cmd.result
-                              ? cmd.commandType === "GetEventLogs"
-                                ? (
-                                  <button
-                                    className="flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
-                                    onClick={() => { setLogDialogContent(cmd.result!); setLogDialogOpen(true); }}
-                                  >
-                                    <ScrollText className="h-3.5 w-3.5" />
-                                    Protokoll anzeigen
-                                  </button>
-                                )
-                                : (
+                              ? (
                                   <Popover>
                                     <PopoverTrigger asChild>
                                       <button className="truncate block w-full text-left hover:text-foreground underline decoration-dotted underline-offset-2 cursor-pointer" title="Klicken für vollständigen Text">
@@ -1789,14 +1791,45 @@ export function DeviceDetail() {
                   );
                 }
                 return (
-                  <div className="bg-zinc-950 rounded-md p-4 space-y-1 font-mono text-xs leading-5 max-h-[60vh] overflow-y-auto">
-                    {errors.map((e, i) => (
-                      <div key={i} className="text-red-400">
-                        <span className="text-zinc-500">[{new Date(e.time).toLocaleString("de-DE")}]</span>
-                        {" "}<span className="text-zinc-400">[{e.source}]</span>
-                        {" "}{e.message}
-                      </div>
-                    ))}
+                  <div className="divide-y divide-border">
+                    {errors.map((e, i) => {
+                      const lines = e.message.split('\n').map((l: string) => l.trim()).filter(Boolean);
+                      const headerPrefixes = ['Category:', 'EventId:', 'SpanId:', 'TraceId:', 'ParentId:'];
+                      const bodyLines = lines.filter((l: string) => !headerPrefixes.some(p => l.startsWith(p)));
+                      const firstLine = (bodyLines[0] || lines[0] || e.message).trim();
+                      const hasMore = lines.length > 1;
+                      const isExpanded = expandedEventLogIdx === i;
+                      return (
+                        <div key={i}>
+                          <button
+                            className="w-full text-left px-1 py-2.5 hover:bg-muted/50 transition-colors group flex items-start gap-3"
+                            onClick={() => setExpandedEventLogIdx(isExpanded ? null : i)}
+                          >
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap mb-0.5">
+                                <span className="text-xs text-muted-foreground shrink-0">
+                                  {new Date(e.time).toLocaleString("de-DE", { dateStyle: "short", timeStyle: "medium" })}
+                                </span>
+                                <span className="text-xs font-mono bg-red-500/10 text-red-600 dark:text-red-400 px-1.5 py-0.5 rounded shrink-0">
+                                  {e.source}
+                                </span>
+                              </div>
+                              <p className="text-sm text-foreground truncate">{firstLine}</p>
+                            </div>
+                            {hasMore && (
+                              <ChevronDown className={cn("h-3.5 w-3.5 text-muted-foreground shrink-0 mt-1 transition-transform duration-150", isExpanded && "rotate-180")} />
+                            )}
+                          </button>
+                          {isExpanded && hasMore && (
+                            <div className="px-1 pb-3">
+                              <pre className="text-xs text-foreground/80 whitespace-pre-wrap break-words bg-muted/50 rounded-md p-3 max-h-72 overflow-y-auto leading-relaxed font-mono border border-border/50">
+                                {e.message}
+                              </pre>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 );
               })()}
@@ -1850,37 +1883,6 @@ export function DeviceDetail() {
         </DialogContent>
       </Dialog>
 
-      {/* Event Log Dialog */}
-      <Dialog open={logDialogOpen} onOpenChange={setLogDialogOpen}>
-        <DialogContent className="max-w-4xl w-full">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <ScrollText className="h-4 w-4" />
-              Windows Ereignisprotokoll
-            </DialogTitle>
-          </DialogHeader>
-          <div className="bg-zinc-950 rounded-md p-4 max-h-[60vh] overflow-y-auto font-mono text-xs leading-5">
-            {logDialogContent.split("\n").map((line, i) => {
-              const isError = /\[(ERROR|KRIT )\]/.test(line);
-              const isWarn = /\[WARN \]/.test(line);
-              const isInfo = /\[INFO \]/.test(line);
-              return (
-                <div key={i} className={cn(
-                  isError ? "text-red-400" :
-                  isWarn  ? "text-amber-400" :
-                  isInfo  ? "text-zinc-300" :
-                            "text-zinc-500"
-                )}>
-                  {line || " "}
-                </div>
-              );
-            })}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setLogDialogOpen(false)}>Schließen</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
     </div>
   );
