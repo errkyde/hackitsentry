@@ -60,6 +60,8 @@ public class SightAgent : BackgroundService
     {
         _logger.LogInformation("HITSight Agent starting (v{Version})...", CurrentVersion);
 
+        MigrateServiceNameIfNeeded();
+
         var resolvedUrl = SecureStore.LoadServerUrl()
             ?? RegistryConfig.GetServerUrl()
             ?? _fullConfig["HITSightAgent:ServerUrl"];
@@ -1210,6 +1212,66 @@ public class SightAgent : BackgroundService
         {
             _logger.LogWarning(ex, "Could not save agent state");
         }
+    }
+
+    // Detects if we are running under a legacy service name (HITGuardAgent, HackITSentryAgent)
+    // and migrates to HITSightAgent via a self-replacing batch script.
+    private void MigrateServiceNameIfNeeded()
+    {
+        try
+        {
+            if (WindowsServiceExists("HITSightAgent")) return;
+
+            var legacyName = new[] { "HITGuardAgent", "HackITSentryAgent" }
+                .FirstOrDefault(WindowsServiceExists);
+            if (legacyName == null) return;
+
+            var exePath = Process.GetCurrentProcess().MainModule?.FileName;
+            if (string.IsNullOrEmpty(exePath)) return;
+
+            _logger.LogInformation("Migrating Windows service name: {Old} → HITSightAgent", legacyName);
+
+            var bat = Path.Combine(Path.GetTempPath(), "hitsight_svc_migrate.bat");
+            File.WriteAllText(bat,
+                "@echo off\r\n" +
+                "ping -n 5 127.0.0.1 > nul\r\n" +
+                $"sc create HITSightAgent binPath= \"{exePath}\" start= auto DisplayName= \"HITSight Agent\"\r\n" +
+                "sc description HITSightAgent \"HITSight Device Management Agent\"\r\n" +
+                "sc start HITSightAgent\r\n" +
+                "ping -n 6 127.0.0.1 > nul\r\n" +
+                $"sc stop {legacyName} > nul 2>&1\r\n" +
+                $"sc delete {legacyName} > nul 2>&1\r\n" +
+                "del /f /q \"%~f0\"\r\n");
+
+            Process.Start(new ProcessStartInfo("cmd.exe", $"/c \"{bat}\"")
+            {
+                CreateNoWindow = true,
+                UseShellExecute = false
+            });
+
+            // Stop ourselves — the bat will start the new HITSightAgent service.
+            _lifetime.StopApplication();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Service name migration failed — continuing under existing name");
+        }
+    }
+
+    private static bool WindowsServiceExists(string name)
+    {
+        try
+        {
+            using var p = Process.Start(new ProcessStartInfo("sc", $"query {name}")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true
+            })!;
+            p.WaitForExit();
+            return p.ExitCode == 0;
+        }
+        catch { return false; }
     }
 }
 
