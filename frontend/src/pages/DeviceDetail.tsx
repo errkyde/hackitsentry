@@ -619,7 +619,7 @@ export function DeviceDetail() {
                   onClick={() => setRemoveDialog(true)}
                 >
                   <Trash2 className="h-4 w-4 mr-1.5" />
-                  Aus Sentry entfernen
+                  Aus HITSight entfernen
                 </Button>
               </>
             )}
@@ -1353,7 +1353,7 @@ export function DeviceDetail() {
                       <Input
                         value={commandParams}
                         onChange={e => setCommandParams(e.target.value)}
-                        placeholder="https://sentry.example.com"
+                        placeholder="https://hitsight.example.com"
                         type="url"
                       />
                     </div>
@@ -1364,7 +1364,7 @@ export function DeviceDetail() {
                       <Input
                         value={commandParams || latestAgentDownloadUrl}
                         onChange={e => setCommandParams(e.target.value)}
-                        placeholder={latestAgentDownloadUrl || "https://…/HackITSentry-Agent.exe"}
+                        placeholder={latestAgentDownloadUrl || "https://…/HITSight-Agent.exe"}
                       />
                     </div>
                   )}
@@ -1776,7 +1776,7 @@ export function DeviceDetail() {
                 <ScrollText className="h-4 w-4" />
                 Windows-Fehlerprotokoll
               </CardTitle>
-              <p className="text-xs text-muted-foreground">Automatisch bei jedem Check-in aktualisiert — letzte 24 Stunden, nur Fehler des Sentry-Agents.</p>
+              <p className="text-xs text-muted-foreground">Automatisch bei jedem Check-in aktualisiert — letzte 24 Stunden, nur Fehler des HITSight-Agents.</p>
             </CardHeader>
             <CardContent>
               {(() => {
@@ -1838,14 +1838,14 @@ export function DeviceDetail() {
         </TabsContent>
       </Tabs>
 
-      {/* Remove device from Sentry dialog */}
+      {/* Remove device from HITSight dialog */}
       <Dialog open={removeDialog} onOpenChange={setRemoveDialog}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle>Gerät aus Sentry entfernen</DialogTitle>
+            <DialogTitle>Gerät aus HITSight entfernen</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            <strong className="text-foreground">{device.hostname}</strong> wird aus der Sentry-Datenbank gelöscht.
+            <strong className="text-foreground">{device.hostname}</strong> wird aus der HITSight-Datenbank gelöscht.
             Der Agent auf dem PC (falls noch vorhanden) läuft weiter, kann sich aber nicht mehr einloggen.
           </p>
           <div className="rounded-md bg-amber-500/10 border border-amber-500/20 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
@@ -1867,7 +1867,7 @@ export function DeviceDetail() {
             <DialogTitle>Agent deinstallieren</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            Der HackIT Sentry Agent auf <strong className="text-foreground">{device.hostname}</strong> wird
+            Der HITSight Agent auf <strong className="text-foreground">{device.hostname}</strong> wird
             vollständig deinstalliert — Dienst, alle Dateien und Konfigurationen werden vom Windows-PC entfernt.
             Das Gerät wird aus der Datenbank gelöscht.
           </p>

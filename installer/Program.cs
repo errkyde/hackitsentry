@@ -6,8 +6,8 @@ using System.Text.Json;
 
 // ── Placeholders – patched at download time by the server ─────────────────
 // Total length must stay constant (server patches by replacing bytes in-place)
-const string RawServerUrl   = "HACKIT_SERVER_URL:===============================================================================================================================================================================================================================================================================================================================================================================================================================";  // 18 prefix + 430 padding = 448 chars
-const string RawInstallTok  = "HACKIT_INSTALL_TOK:=============================================================================================================";  // 19 prefix + 109 padding = 128 chars
+const string RawServerUrl   = "HITSIGHT_SERVER_URL:===============================================================================================================================================================================================================================================================================================================================================================================================================================";  // 18 prefix + 430 padding = 448 chars
+const string RawInstallTok  = "HITSIGHT_INSTALL_TOK:=============================================================================================================";  // 19 prefix + 109 padding = 128 chars
 
 static string ReadPlaceholder(string raw, string prefix)
 {
@@ -18,11 +18,11 @@ static string ReadPlaceholder(string raw, string prefix)
 // ─────────────────────────────────────────────────────────────────────────
 
 Console.OutputEncoding = Encoding.UTF8;
-Console.Title = "HackIT Sentry - Agent Setup";
+Console.Title = "HITSight - Agent Setup";
 
-const string ServiceName    = "HackITSentryAgent";
-const string ServiceDisplay = "HackIT Sentry Agent";
-const string InstallDir     = @"C:\Program Files\HackITSentry\Agent";
+const string ServiceName    = "HITSightAgent";
+const string ServiceDisplay = "HITSight Agent";
+const string InstallDir     = @"C:\Program Files\HITSight\Agent";
 
 if (!new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator))
 {
@@ -36,8 +36,8 @@ string installToken;
 
 try
 {
-    serverUrl    = ReadPlaceholder(RawServerUrl,  "HACKIT_SERVER_URL:");
-    installToken = ReadPlaceholder(RawInstallTok, "HACKIT_INSTALL_TOK:");
+    serverUrl    = ReadPlaceholder(RawServerUrl,  "HITSIGHT_SERVER_URL:");
+    installToken = ReadPlaceholder(RawInstallTok, "HITSIGHT_INSTALL_TOK:");
 
     if (serverUrl.Length == 0 || serverUrl.StartsWith("="))
         throw new Exception("Installer wurde nicht korrekt konfiguriert (Server-URL fehlt).");
@@ -50,36 +50,42 @@ catch (Exception ex)
 }
 
 Console.WriteLine();
-Console.WriteLine("  HackIT Sentry - Agent Setup");
+Console.WriteLine("  HITSight - Agent Setup");
 Console.WriteLine("  ============================");
 Console.WriteLine($"  Server: {serverUrl}");
 Console.WriteLine();
 
 try
 {
-    if (ServiceExists(ServiceName))
+    // Remove current and all legacy service names so no duplicate services remain.
+    foreach (var svcName in new[] { ServiceName, "HITGuardAgent", "HackITSentryAgent", "SentryAgent" })
     {
-        Console.Write("  Bestehenden Dienst entfernen... ");
-        Run("sc", $"stop {ServiceName}");
-        WaitForServiceStopped(ServiceName, timeoutSeconds: 15);
-        Run("sc", $"delete {ServiceName}");
+        if (!ServiceExists(svcName)) continue;
+        Console.Write($"  Dienst '{svcName}' entfernen...        ");
+        Run("sc", $"stop {svcName}");
+        WaitForServiceStopped(svcName, timeoutSeconds: 15);
+        Run("sc", $"delete {svcName}");
         Thread.Sleep(500);
         Console.WriteLine("OK");
     }
 
-    // Clear old agent state so it registers fresh (removes stale tokens / API keys)
-    var stateDir = @"C:\ProgramData\HackITSentry";
-    Directory.CreateDirectory(stateDir);
-    foreach (var f in new[] { "agent-state.json", "agent.key", "server.url" })
+    // Clear agent state (current + legacy directories) so it registers fresh.
+    foreach (var dir in new[] { @"C:\ProgramData\HITSight", @"C:\ProgramData\HITGuard", @"C:\ProgramData\HackITSentry" })
     {
-        var p = Path.Combine(stateDir, f);
-        if (File.Exists(p)) { File.Delete(p); }
+        if (!Directory.Exists(dir)) continue;
+        foreach (var f in new[] { "agent-state.json", "agent.key", "server.url" })
+        {
+            var p = Path.Combine(dir, f);
+            if (File.Exists(p)) File.Delete(p);
+        }
     }
+    var stateDir = @"C:\ProgramData\HITSight";
+    Directory.CreateDirectory(stateDir);
 
     Directory.CreateDirectory(InstallDir);
 
     Console.Write("  Agent entpacken...            ");
-    var agentExe = Path.Combine(InstallDir, "HackITSentry.Agent.exe");
+    var agentExe = Path.Combine(InstallDir, "HITSight.Agent.exe");
     using (var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("agent.exe")
         ?? throw new Exception("Eingebettetes Agent-Binary nicht gefunden."))
     using (var file = File.Create(agentExe))
@@ -89,7 +95,7 @@ try
     Console.Write("  Konfiguration schreiben...    ");
     var config = new
     {
-        SentryAgent = new
+        HITSightAgent = new
         {
             ServerUrl = serverUrl,
             InstallToken = installToken,
@@ -107,7 +113,7 @@ try
 
     Console.Write("  Dienst registrieren...        ");
     Run("sc", $"create {ServiceName} binPath= \"{agentExe}\" start= auto DisplayName= \"{ServiceDisplay}\"");
-    Run("sc", $"description {ServiceName} \"HackIT Sentry Device Management Agent\"");
+    Run("sc", $"description {ServiceName} \"HITSight Device Management Agent\"");
     Console.WriteLine("OK");
 
     Console.Write("  Dienst starten...             ");
@@ -172,7 +178,7 @@ static void Run(string exe, string args)
 static void SelfDelete()
 {
     var exe = Environment.ProcessPath!;
-    var bat = Path.Combine(Path.GetTempPath(), "hackit_cleanup.bat");
+    var bat = Path.Combine(Path.GetTempPath(), "hitsight_cleanup.bat");
     File.WriteAllText(bat,
         "@echo off\r\n" +
         "ping -n 3 127.0.0.1 > nul\r\n" +

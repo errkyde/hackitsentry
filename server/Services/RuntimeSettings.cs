@@ -1,13 +1,22 @@
-using HackITSentry.Server.Models;
+using HITSight.Server.Data;
+using HITSight.Server.Models;
 
-namespace HackITSentry.Server.Services;
+namespace HITSight.Server.Services;
 
 /// <summary>
-/// Singleton that holds runtime-configurable settings.
-/// Initialized from environment/appsettings, overridable via the Settings API (stored in DB).
+/// Scoped, per-request settings loaded from the tenant's AppSettings table.
+/// Initialized once per scope from IConfiguration + tenant AppDbContext.
 /// </summary>
 public class RuntimeSettings
 {
+    public RuntimeSettings() { }
+
+    public RuntimeSettings(IConfiguration config, AppDbContext db)
+    {
+        LoadFromConfig(config);
+        try { LoadFromDb(db.AppSettings.ToList()); } catch { }
+    }
+
     // Agent check-in interval
     public int CheckinIntervalMinutes { get; set; } = 30;
 
@@ -24,7 +33,7 @@ public class RuntimeSettings
     public int EmailPort { get; set; } = 587;
     public string EmailUsername { get; set; } = "";
     public string EmailPassword { get; set; } = "";
-    public string EmailFrom { get; set; } = "sentry@localhost";
+    public string EmailFrom { get; set; } = "hitsight@localhost";
     public string EmailTo { get; set; } = "";
     public bool EmailUseSsl { get; set; } = false;
 
@@ -78,7 +87,7 @@ public class RuntimeSettings
         EmailPort = config.GetValue<int>("Email:Port", 587);
         EmailUsername = config["Email:Username"] ?? "";
         EmailPassword = config["Email:Password"] ?? "";
-        EmailFrom = config["Email:From"] ?? "sentry@localhost";
+        EmailFrom = config["Email:From"] ?? "hitsight@localhost";
         EmailTo = config["Email:To"] ?? "";
         EmailUseSsl = config.GetValue<bool>("Email:UseSsl", false);
     }

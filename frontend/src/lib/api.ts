@@ -83,10 +83,14 @@ export const settings = {
   saveAgentSettings: (autoUpdate: boolean) =>
     request<{ message: string }>("/api/settings/agent", { method: "PUT", body: JSON.stringify({ autoUpdate }) }),
   getLdap: () => request<LdapSettings>("/api/settings/ldap"),
-  saveLdap: (data: Omit<LdapSettings, "hasBindPassword"> & { bindPassword?: string }) =>
+  saveLdap: (data: Omit<LdapSettings, "hasBindPassword" | "hasCaCertificate"> & { bindPassword?: string }) =>
     request<{ message: string }>("/api/settings/ldap", { method: "PUT", body: JSON.stringify(data) }),
   testLdap: () =>
     request<{ message: string }>("/api/settings/ldap/test", { method: "POST" }),
+  uploadLdapCaCert: (pem: string) =>
+    request<{ message: string }>("/api/settings/ldap/ca-certificate", { method: "POST", body: JSON.stringify({ pem }) }),
+  deleteLdapCaCert: () =>
+    request<{ message: string }>("/api/settings/ldap/ca-certificate", { method: "DELETE" }),
 };
 
 // Custom Fields
@@ -99,6 +103,31 @@ export const customFields = {
   getValues: (deviceId: string) => request<CustomFieldWithValue[]>("/api/custom-fields/values/" + deviceId),
   saveValues: (deviceId: string, values: { definitionId: string; value: string }[]) =>
     request<{ message: string }>("/api/custom-fields/values/" + deviceId, { method: "PUT", body: JSON.stringify(values) }),
+};
+
+// Tenant info (plan, device limit, subscription status)
+export interface TenantInfo {
+  plan: string;
+  maxDevices: number | null;
+  deviceCount: number;
+  subscriptionStatus: string | null;
+  trialEndsAt: string | null;
+  currentPeriodEndsAt: string | null;
+}
+
+export const tenantInfo = {
+  get: () => request<TenantInfo>("/api/tenant-info"),
+};
+
+// Login message (read-once — server deletes after first GET)
+export const loginMessage = {
+  get: () => request<{ message: string | null }>("/api/login-message"),
+};
+
+// Onboarding
+export const onboarding = {
+  getStatus: () => request<{ done: boolean }>("/api/onboarding"),
+  complete: () => request<{ message: string }>("/api/onboarding/complete", { method: "POST" }),
 };
 
 // Auth
@@ -287,6 +316,21 @@ export const groups = {
     request<{ removed: number }>(`/api/groups/${id}/sync-notifications`, { method: "DELETE" }),
 };
 
+// Checkout / Platform signup (public, no auth required)
+export const checkout = {
+  getPricing: () =>
+    request<PricingInfo>("/api/checkout/pricing"),
+  createSession: (data: { companyName: string; email: string; plan: string; billingInterval: string }) =>
+    request<{ sessionId: string; publishableKey: string }>("/api/checkout/session", {
+      method: "POST", body: JSON.stringify(data),
+    }),
+};
+
+export interface PricingInfo {
+  plans: Array<{ id: string; name: string; maxDevices: number | null; features: string[] }>;
+  publishableKey: string | null;
+}
+
 // Types
 export interface DevicePage {
   total: number;
@@ -430,6 +474,7 @@ export interface LdapSettings {
   baseDn: string;
   bindDn: string;
   hasBindPassword: boolean;
+  hasCaCertificate: boolean;
   userSearchBase: string;
   userFilter: string;
   adminGroup: string;
@@ -475,6 +520,7 @@ export interface Group {
   createdAt: string;
   deviceCount: number;
   notificationSettingsJson?: string | null;
+  rustDeskOptionsJson?: string | null;
 }
 
 export interface DeviceNote {
@@ -667,6 +713,15 @@ export interface DashboardData {
   }>;
   devicesByGroup: Array<{ id: string; name: string; color: string | null; deviceCount: number }>;
   devicesByCustomer: Array<{ id: string; name: string; deviceCount: number }>;
+  pendingCommandsList: Array<{
+    id: string;
+    deviceId: string;
+    deviceHostname: string;
+    commandType: string;
+    status: string;
+    issuedByUsername: string;
+    createdAt: string;
+  }>;
 }
 
 export interface SoftwarePackage {

@@ -3,7 +3,7 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
 
-namespace HackITSentry.Server.Services;
+namespace HITSight.Server.Services;
 
 public class JwtService
 {
@@ -27,8 +27,8 @@ public class JwtService
         };
 
         var token = new JwtSecurityToken(
-            issuer: "HackITSentry",
-            audience: "HackITSentry",
+            issuer: "HITSight",
+            audience: "HITSight",
             claims: claims,
             expires: DateTime.UtcNow.AddHours(8),
             signingCredentials: credentials

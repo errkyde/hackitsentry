@@ -1,6 +1,7 @@
-using HackITSentry.Server.Data;
-using HackITSentry.Server.Models;
-using HackITSentry.Server.Services;
+using HITSight.Server.Data;
+using HITSight.Server.Middleware;
+using HITSight.Server.Models;
+using HITSight.Server.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.ResponseCompression;
@@ -23,7 +24,6 @@ builder.Services.AddResponseCompression(opts =>
 
 builder.Services.AddRateLimiter(options =>
 {
-    // Login: max 5 attempts per IP per minute
     options.AddFixedWindowLimiter("login", o =>
     {
         o.PermitLimit = 5;
@@ -31,8 +31,14 @@ builder.Services.AddRateLimiter(options =>
         o.QueueLimit = 0;
         o.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
     });
-    // Agent registration: max 10 per IP per minute
     options.AddFixedWindowLimiter("agent-register", o =>
+    {
+        o.PermitLimit = 10;
+        o.Window = TimeSpan.FromMinutes(1);
+        o.QueueLimit = 0;
+        o.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+    });
+    options.AddFixedWindowLimiter("checkout", o =>
     {
         o.PermitLimit = 10;
         o.Window = TimeSpan.FromMinutes(1);
@@ -46,13 +52,48 @@ builder.Services.AddRateLimiter(options =>
     };
 });
 
-builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+// ── Stripe ────────────────────────────────────────────────────────────────────
+var stripeKey = builder.Configuration["Stripe:SecretKey"];
+if (!string.IsNullOrEmpty(stripeKey))
+    Stripe.StripeConfiguration.ApiKey = stripeKey;
 
+// ── Platform DB (optional — only in multi-tenant SaaS mode) ─────────────────
+var platformConnStr = builder.Configuration["Platform:ConnectionString"];
+if (!string.IsNullOrEmpty(platformConnStr))
+{
+    builder.Services.AddDbContext<PlatformDbContext>(options =>
+        options.UseNpgsql(platformConnStr));
+
+    builder.Services.AddScoped<TenantProvisioningService>();
+    builder.Services.AddHostedService<TenantCleanupService>();
+    builder.Services.AddHostedService<TrialReminderService>();
+}
+
+builder.Services.AddSingleton<PlatformEmailService>();
+
+// ── Tenant resolution ────────────────────────────────────────────────────────
+builder.Services.AddScoped<TenantContext>();
+builder.Services.AddScoped<ITenantContext>(sp => sp.GetRequiredService<TenantContext>());
+
+// ── Tenant-scoped AppDbContext — connection string from TenantContext ─────────
+builder.Services.AddScoped<AppDbContext>(sp =>
+{
+    var tenantCtx = sp.GetRequiredService<TenantContext>();
+    var cs = !string.IsNullOrEmpty(tenantCtx.ConnectionString)
+        ? tenantCtx.ConnectionString
+        : builder.Configuration.GetConnectionString("DefaultConnection")!;
+    var opts = new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(cs).Options;
+    return new AppDbContext(opts);
+});
+
+// ── Per-tenant RuntimeSettings & AlertEmailService (Scoped) ──────────────────
+builder.Services.AddScoped<RuntimeSettings>();
+builder.Services.AddScoped<AlertEmailService>();
+
+// ── Singletons that don't depend on tenant context ───────────────────────────
 builder.Services.AddSingleton<JwtService>();
+builder.Services.AddSingleton<PlatformJwtService>();
 builder.Services.AddSingleton<LicenseEncryptionService>();
-builder.Services.AddSingleton<RuntimeSettings>();
-builder.Services.AddSingleton<AlertEmailService>();
 builder.Services.AddSingleton<InstallerService>();
 builder.Services.AddSingleton<AgentCommandNotifier>();
 builder.Services.AddHostedService<DeviceOfflineAlertService>();
@@ -61,6 +102,13 @@ builder.Services.AddScoped<LdapService>();
 builder.Services.AddHttpContextAccessor();
 
 var jwtKey = builder.Configuration["Jwt:Key"]!;
+var platformJwtKey = builder.Configuration["Platform:JwtKey"];
+// Fall back to a random per-process key so the "SuperAdmin" scheme is always registered
+// (controllers protected by [Authorize(Policy="SuperAdminFull")] reject unauthenticated calls regardless)
+var superAdminKey = string.IsNullOrEmpty(platformJwtKey)
+    ? Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32))
+    : platformJwtKey;
+
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
@@ -69,448 +117,194 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidateIssuerSigningKey = true,
             IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey)),
             ValidateIssuer = true,
-            ValidIssuer = "HackITSentry",
+            ValidIssuer = "HITSight",
             ValidateAudience = true,
-            ValidAudience = "HackITSentry",
+            ValidAudience = "HITSight",
+            ClockSkew = TimeSpan.Zero
+        };
+    })
+    .AddJwtBearer("SuperAdmin", options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(superAdminKey)),
+            ValidateIssuer = true,
+            ValidIssuer = "HITSightPlatform",
+            ValidateAudience = true,
+            ValidAudience = "HITSightPlatform",
             ClockSkew = TimeSpan.Zero
         };
     });
 
-builder.Services.AddAuthorization();
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy("SuperAdminFull", policy =>
+    {
+        policy.AddAuthenticationSchemes("SuperAdmin");
+        policy.RequireAuthenticatedUser();
+        policy.RequireClaim("phase", "full");
+    });
+});
 
 var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
     ?? ["http://localhost:5173"];
+
+var corsPlatformDomain = builder.Configuration["Platform:Domain"];
 
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
     {
-        policy.WithOrigins(allowedOrigins)
-              .AllowAnyHeader()
-              .AllowAnyMethod();
+        if (!string.IsNullOrEmpty(corsPlatformDomain))
+        {
+            // Platform / SaaS mode: allow any subdomain of the platform domain
+            policy.SetIsOriginAllowed(origin =>
+            {
+                if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri)) return false;
+                return uri.Host.Equals(corsPlatformDomain, StringComparison.OrdinalIgnoreCase)
+                    || uri.Host.EndsWith("." + corsPlatformDomain, StringComparison.OrdinalIgnoreCase);
+            })
+            .AllowAnyHeader()
+            .AllowAnyMethod();
+        }
+        else
+        {
+            policy.WithOrigins(allowedOrigins)
+                  .AllowAnyHeader()
+                  .AllowAnyMethod();
+        }
     });
 });
 
 var app = builder.Build();
 
-// Initialize DB, seed admin, load runtime settings
-using (var scope = app.Services.CreateScope())
+// ── Startup: initialize databases ────────────────────────────────────────────
 {
-    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-    db.Database.EnsureCreated();
+    // Always run migrations on the default/legacy DB
+    var defaultCs = builder.Configuration.GetConnectionString("DefaultConnection")!;
+    await using var startupDb = new AppDbContext(
+        new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(defaultCs).Options);
+    await DbMigrator.RunAsync(startupDb);
+    await DbMigrator.SeedDefaultPackagesAsync(startupDb);
 
-    // All DDL migrations run in one transaction — much faster than one round-trip each
-    using var tx = db.Database.BeginTransaction();
+    // Seed admin user if no users exist
+    if (!await startupDb.Users.AnyAsync())
+    {
+        startupDb.Users.Add(new User
+        {
+            Username = "admin",
+            PasswordHash = BCrypt.Net.BCrypt.HashPassword("admin"),
+            Role = "Admin"
+        });
+        await startupDb.SaveChangesAsync();
+    }
+}
 
-    // Create tables for existing deployments (EnsureCreated won't add new tables)
-    db.Database.ExecuteSqlRaw("""
-        CREATE TABLE IF NOT EXISTS "AppSettings" (
-            "Key"   text NOT NULL,
-            "Value" text NOT NULL,
-            CONSTRAINT "PK_AppSettings" PRIMARY KEY ("Key")
-        )
-        """);
+// Platform DB: initialize schema and run migrations for all tenant DBs
+if (!string.IsNullOrEmpty(platformConnStr))
+{
+    await using var scope = app.Services.CreateAsyncScope();
+    var platformDb = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
 
-    db.Database.ExecuteSqlRaw("""
-        CREATE TABLE IF NOT EXISTS "DeviceNotes" (
-            "Id"             uuid NOT NULL DEFAULT gen_random_uuid(),
-            "DeviceId"       uuid NOT NULL,
-            "Content"        text NOT NULL DEFAULT '',
-            "AuthorUsername" text NOT NULL DEFAULT '',
-            "CreatedAt"      timestamp with time zone NOT NULL DEFAULT now(),
-            CONSTRAINT "PK_DeviceNotes" PRIMARY KEY ("Id"),
-            CONSTRAINT "FK_DeviceNotes_Devices" FOREIGN KEY ("DeviceId")
-                REFERENCES "Devices" ("Id") ON DELETE CASCADE
-        )
-        """);
-
-    db.Database.ExecuteSqlRaw("""
-        CREATE TABLE IF NOT EXISTS "DeviceCommands" (
-            "Id"               uuid NOT NULL DEFAULT gen_random_uuid(),
-            "DeviceId"         uuid NOT NULL,
-            "CommandType"      integer NOT NULL DEFAULT 0,
-            "Parameters"       text,
-            "Status"           integer NOT NULL DEFAULT 0,
-            "IssuedByUsername" text NOT NULL DEFAULT '',
-            "CreatedAt"        timestamp with time zone NOT NULL DEFAULT now(),
-            "ExecutedAt"       timestamp with time zone,
-            "Result"           text,
-            CONSTRAINT "PK_DeviceCommands" PRIMARY KEY ("Id"),
-            CONSTRAINT "FK_DeviceCommands_Devices" FOREIGN KEY ("DeviceId")
-                REFERENCES "Devices" ("Id") ON DELETE CASCADE
-        )
-        """);
-
-    db.Database.ExecuteSqlRaw("""
-        CREATE TABLE IF NOT EXISTS "AuditLogs" (
-            "Id"         uuid NOT NULL DEFAULT gen_random_uuid(),
-            "Username"   text NOT NULL DEFAULT '',
-            "Action"     text NOT NULL DEFAULT '',
-            "EntityType" text NOT NULL DEFAULT '',
-            "EntityId"   text,
-            "Details"    text,
-            "IpAddress"  text,
-            "Timestamp"  timestamp with time zone NOT NULL DEFAULT now(),
-            CONSTRAINT "PK_AuditLogs" PRIMARY KEY ("Id")
-        )
-        """);
-
-    db.Database.ExecuteSqlRaw("""
-        CREATE TABLE IF NOT EXISTS "SoftwareBlacklist" (
-            "Id"              uuid NOT NULL DEFAULT gen_random_uuid(),
-            "NamePattern"     text NOT NULL DEFAULT '',
-            "Publisher"       text,
-            "Reason"          text,
-            "AddedByUsername" text NOT NULL DEFAULT '',
-            "AddedAt"         timestamp with time zone NOT NULL DEFAULT now(),
-            CONSTRAINT "PK_SoftwareBlacklist" PRIMARY KEY ("Id")
-        )
-        """);
-
-    db.Database.ExecuteSqlRaw("""
-        CREATE TABLE IF NOT EXISTS "SoftwareAlerts" (
+    // Ensure Platform DB tables exist
+    await platformDb.Database.ExecuteSqlRawAsync("""
+        CREATE TABLE IF NOT EXISTS "Tenants" (
             "Id"                     uuid NOT NULL DEFAULT gen_random_uuid(),
-            "DeviceId"               uuid NOT NULL,
-            "BlacklistEntryId"       uuid NOT NULL,
-            "SoftwareName"           text NOT NULL DEFAULT '',
-            "SoftwareVersion"        text NOT NULL DEFAULT '',
-            "DetectedAt"             timestamp with time zone NOT NULL DEFAULT now(),
-            "AcknowledgedAt"         timestamp with time zone,
-            "AcknowledgedByUsername" text,
-            CONSTRAINT "PK_SoftwareAlerts" PRIMARY KEY ("Id"),
-            CONSTRAINT "FK_SoftwareAlerts_Devices" FOREIGN KEY ("DeviceId")
-                REFERENCES "Devices" ("Id") ON DELETE CASCADE,
-            CONSTRAINT "FK_SoftwareAlerts_Blacklist" FOREIGN KEY ("BlacklistEntryId")
-                REFERENCES "SoftwareBlacklist" ("Id") ON DELETE CASCADE
+            "Slug"                   text NOT NULL DEFAULT '',
+            "Name"                   text NOT NULL DEFAULT '',
+            "DbName"                 text NOT NULL DEFAULT '',
+            "Plan"                   text NOT NULL DEFAULT 'starter',
+            "MaxDevices"             integer NOT NULL DEFAULT 25,
+            "IsActive"               boolean NOT NULL DEFAULT true,
+            "AdminEmail"             text NOT NULL DEFAULT '',
+            "StripeCustomerId"       text,
+            "StripeSubscriptionId"   text,
+            "SubscriptionStatus"     text,
+            "TrialEndsAt"            timestamp with time zone,
+            "CurrentPeriodEndsAt"    timestamp with time zone,
+            "DeactivatedAt"          timestamp with time zone,
+            "ScheduledDeletionAt"    timestamp with time zone,
+            "CreatedAt"              timestamp with time zone NOT NULL DEFAULT now(),
+            CONSTRAINT "PK_Tenants" PRIMARY KEY ("Id")
         )
         """);
 
-    db.Database.ExecuteSqlRaw("""
-        CREATE TABLE IF NOT EXISTS "AgentVersions" (
-            "Id"          uuid NOT NULL DEFAULT gen_random_uuid(),
-            "Version"     text NOT NULL DEFAULT '',
-            "DownloadUrl" text,
-            "Changelog"   text,
-            "IsLatest"    boolean NOT NULL DEFAULT false,
-            "ReleasedAt"  timestamp with time zone NOT NULL DEFAULT now(),
-            CONSTRAINT "PK_AgentVersions" PRIMARY KEY ("Id")
-        )
+    await platformDb.Database.ExecuteSqlRawAsync("""
+        CREATE UNIQUE INDEX IF NOT EXISTS "IX_Tenants_Slug"
+            ON "Tenants" ("Slug")
         """);
 
-    db.Database.ExecuteSqlRaw("""
-        CREATE UNIQUE INDEX IF NOT EXISTS "IX_AgentVersions_Version"
-            ON "AgentVersions" ("Version")
+    // Idempotent column additions for Platform DB
+    await platformDb.Database.ExecuteSqlRawAsync("""
+        ALTER TABLE "Tenants" ADD COLUMN IF NOT EXISTS "TrialReminderSentAt" timestamp with time zone
         """);
 
-    db.Database.ExecuteSqlRaw("""
-        ALTER TABLE "LicenseInfos"
-            ADD COLUMN IF NOT EXISTS "ExpiresAt" timestamp with time zone
-        """);
-
-    db.Database.ExecuteSqlRaw("""
-        CREATE TABLE IF NOT EXISTS "InstallTokens" (
-            "Id"                  uuid NOT NULL DEFAULT gen_random_uuid(),
-            "Token"               text NOT NULL,
-            "CreatedByUsername"   text NOT NULL DEFAULT '',
-            "CreatedAt"           timestamp with time zone NOT NULL DEFAULT now(),
-            "ExpiresAt"           timestamp with time zone NOT NULL,
-            "Used"                boolean NOT NULL DEFAULT false,
-            "UsedAt"              timestamp with time zone,
-            CONSTRAINT "PK_InstallTokens" PRIMARY KEY ("Id")
-        )
-        """);
-
-    db.Database.ExecuteSqlRaw("""
-        CREATE UNIQUE INDEX IF NOT EXISTS "IX_InstallTokens_Token"
-            ON "InstallTokens" ("Token")
-        """);
-
-    db.Database.ExecuteSqlRaw("""
-        ALTER TABLE "PendingDevices"
-            ADD COLUMN IF NOT EXISTS "InvitedByUsername" text
-        """);
-
-    db.Database.ExecuteSqlRaw("""
-        ALTER TABLE "PendingDevices"
-            ADD COLUMN IF NOT EXISTS "DeployKeyName" text
-        """);
-
-    db.Database.ExecuteSqlRaw("""
-        ALTER TABLE "Devices"
-            ADD COLUMN IF NOT EXISTS "RustDeskId" text NOT NULL DEFAULT ''
-        """);
-
-    db.Database.ExecuteSqlRaw("""
-        ALTER TABLE "Devices"
-            ADD COLUMN IF NOT EXISTS "AgentVersion" text NOT NULL DEFAULT ''
-        """);
-
-    db.Database.ExecuteSqlRaw("""
-        ALTER TABLE "Devices"
-            ADD COLUMN IF NOT EXISTS "LastDiskAlertAt" timestamp with time zone
-        """);
-
-    db.Database.ExecuteSqlRaw("""
-        ALTER TABLE "Devices"
-            ADD COLUMN IF NOT EXISTS "DiskAlertAcknowledgedUsedPct" double precision
-        """);
-
-    db.Database.ExecuteSqlRaw("""
-        CREATE TABLE IF NOT EXISTS "DeviceNotificationOverrides" (
-            "Id"                   uuid NOT NULL DEFAULT gen_random_uuid(),
-            "DeviceId"             uuid NOT NULL,
-            "AlertOnOffline"       boolean,
-            "AlertOnOnline"        boolean,
-            "AlertOnSoftwareAlert" boolean,
-            "AlertOnDiskFull"      boolean,
-            CONSTRAINT "PK_DeviceNotificationOverrides" PRIMARY KEY ("Id"),
-            CONSTRAINT "FK_DeviceNotificationOverrides_Devices" FOREIGN KEY ("DeviceId")
-                REFERENCES "Devices" ("Id") ON DELETE CASCADE
-        )
-        """);
-
-    db.Database.ExecuteSqlRaw("""
-        CREATE UNIQUE INDEX IF NOT EXISTS "IX_DeviceNotificationOverrides_DeviceId"
-            ON "DeviceNotificationOverrides" ("DeviceId")
-        """);
-
-    db.Database.ExecuteSqlRaw("""
-        ALTER TABLE "DeviceNotificationOverrides"
-            ADD COLUMN IF NOT EXISTS "OfflineAlertDelayMinutes" integer NULL
-        """);
-
-    db.Database.ExecuteSqlRaw("""
-        ALTER TABLE "DeviceNotificationOverrides"
-            ADD COLUMN IF NOT EXISTS "SourceGroupId" uuid NULL
-        """);
-
-    db.Database.ExecuteSqlRaw("""
-        CREATE TABLE IF NOT EXISTS "CustomFieldDefinitions" (
-            "Id"        uuid NOT NULL DEFAULT gen_random_uuid(),
-            "Name"      text NOT NULL DEFAULT '',
-            "SortOrder" integer NOT NULL DEFAULT 0,
-            CONSTRAINT "PK_CustomFieldDefinitions" PRIMARY KEY ("Id")
-        )
-        """);
-
-    db.Database.ExecuteSqlRaw("""
-        CREATE TABLE IF NOT EXISTS "CustomFieldValues" (
+    await platformDb.Database.ExecuteSqlRawAsync("""
+        CREATE TABLE IF NOT EXISTS "SuperAdminUsers" (
             "Id"           uuid NOT NULL DEFAULT gen_random_uuid(),
-            "DefinitionId" uuid NOT NULL,
-            "DeviceId"     uuid NOT NULL,
-            "Value"        text NOT NULL DEFAULT '',
-            CONSTRAINT "PK_CustomFieldValues" PRIMARY KEY ("Id"),
-            CONSTRAINT "FK_CustomFieldValues_Definitions" FOREIGN KEY ("DefinitionId")
-                REFERENCES "CustomFieldDefinitions" ("Id") ON DELETE CASCADE,
-            CONSTRAINT "FK_CustomFieldValues_Devices" FOREIGN KEY ("DeviceId")
-                REFERENCES "Devices" ("Id") ON DELETE CASCADE
-        )
-        """);
-
-    db.Database.ExecuteSqlRaw("""
-        CREATE UNIQUE INDEX IF NOT EXISTS "IX_CustomFieldValues_DefinitionId_DeviceId"
-            ON "CustomFieldValues" ("DefinitionId", "DeviceId")
-        """);
-
-    db.Database.ExecuteSqlRaw("""
-        CREATE TABLE IF NOT EXISTS "DeployKeys" (
-            "Id"                  uuid NOT NULL DEFAULT gen_random_uuid(),
-            "Key"                 text NOT NULL DEFAULT '',
-            "Name"                text NOT NULL DEFAULT '',
-            "CreatedByUsername"   text NOT NULL DEFAULT '',
-            "CreatedAt"           timestamp with time zone NOT NULL DEFAULT now(),
-            "LastUsedAt"          timestamp with time zone,
-            CONSTRAINT "PK_DeployKeys" PRIMARY KEY ("Id")
-        )
-        """);
-
-    db.Database.ExecuteSqlRaw("""
-        CREATE UNIQUE INDEX IF NOT EXISTS "IX_DeployKeys_Key"
-            ON "DeployKeys" ("Key")
-        """);
-
-    db.Database.ExecuteSqlRaw("""
-        ALTER TABLE "Devices"
-            ADD COLUMN IF NOT EXISTS "RustDeskOptionsJson" text
-        """);
-
-    db.Database.ExecuteSqlRaw(
-        """ALTER TABLE "Devices" ADD COLUMN IF NOT EXISTS "BiosInfoJson" text NOT NULL DEFAULT '{{}}'""");
-
-    db.Database.ExecuteSqlRaw(
-        """ALTER TABLE "Devices" ADD COLUMN IF NOT EXISTS "DefenderStatusJson" text NOT NULL DEFAULT '{{}}'""");
-
-    // Asset Lifecycle
-    db.Database.ExecuteSqlRaw("""
-        ALTER TABLE "Devices" ADD COLUMN IF NOT EXISTS "PurchaseDate"   timestamp with time zone
-        """);
-    db.Database.ExecuteSqlRaw("""
-        ALTER TABLE "Devices" ADD COLUMN IF NOT EXISTS "WarrantyExpiry" timestamp with time zone
-        """);
-    db.Database.ExecuteSqlRaw("""
-        ALTER TABLE "Devices" ADD COLUMN IF NOT EXISTS "AssetTag"       text NOT NULL DEFAULT ''
-        """);
-    db.Database.ExecuteSqlRaw("""
-        ALTER TABLE "Devices" ADD COLUMN IF NOT EXISTS "Location"       text NOT NULL DEFAULT ''
-        """);
-    db.Database.ExecuteSqlRaw("""
-        ALTER TABLE "Devices" ADD COLUMN IF NOT EXISTS "SerialNumber"   text NOT NULL DEFAULT ''
-        """);
-
-    // Offline Alert Delay
-    db.Database.ExecuteSqlRaw("""
-        ALTER TABLE "Devices" ADD COLUMN IF NOT EXISTS "LastOfflineAlertAt" timestamp with time zone
-        """);
-
-    // Scheduled Commands
-    db.Database.ExecuteSqlRaw("""
-        ALTER TABLE "DeviceCommands" ADD COLUMN IF NOT EXISTS "ScheduledFor" timestamp with time zone
-        """);
-
-    // Patch Management
-    db.Database.ExecuteSqlRaw("""
-        ALTER TABLE "Devices" ADD COLUMN IF NOT EXISTS "PendingUpdatesCount" integer NOT NULL DEFAULT 0
-        """);
-    db.Database.ExecuteSqlRaw("""
-        ALTER TABLE "Devices" ADD COLUMN IF NOT EXISTS "LastWindowsUpdateInstalled" timestamp with time zone
-        """);
-
-    // Antivirus Alerts
-    db.Database.ExecuteSqlRaw("""
-        ALTER TABLE "Devices" ADD COLUMN IF NOT EXISTS "LastAvAlertAt" timestamp with time zone
-        """);
-
-    // Software Deployment
-    db.Database.ExecuteSqlRaw("""
-        CREATE TABLE IF NOT EXISTS "SoftwarePackages" (
-            "Id"           uuid NOT NULL DEFAULT gen_random_uuid(),
-            "Name"         text NOT NULL DEFAULT '',
-            "Version"      text NOT NULL DEFAULT '',
-            "Type"         text NOT NULL DEFAULT 'winget',
-            "InstallCmd"   text NOT NULL DEFAULT '',
-            "UninstallCmd" text,
-            "Description"  text NOT NULL DEFAULT '',
-            "CreatedBy"    text NOT NULL DEFAULT '',
+            "Username"     text NOT NULL DEFAULT '',
+            "PasswordHash" text NOT NULL DEFAULT '',
+            "TotpSecret"   text,
+            "TotpEnabled"  boolean NOT NULL DEFAULT false,
             "CreatedAt"    timestamp with time zone NOT NULL DEFAULT now(),
-            CONSTRAINT "PK_SoftwarePackages" PRIMARY KEY ("Id")
+            "LastLoginAt"  timestamp with time zone,
+            CONSTRAINT "PK_SuperAdminUsers" PRIMARY KEY ("Id")
         )
         """);
+    await platformDb.Database.ExecuteSqlRawAsync("""
+        CREATE UNIQUE INDEX IF NOT EXISTS "IX_SuperAdminUsers_Username" ON "SuperAdminUsers" ("Username")
+        """);
 
-    db.Database.ExecuteSqlRaw("""
-        CREATE TABLE IF NOT EXISTS "DeploymentJobs" (
-            "Id"          uuid NOT NULL DEFAULT gen_random_uuid(),
-            "PackageId"   uuid NOT NULL,
-            "DeviceId"    uuid NOT NULL,
-            "Status"      text NOT NULL DEFAULT 'Queued',
-            "Output"      text,
-            "CreatedBy"   text NOT NULL DEFAULT '',
-            "CreatedAt"   timestamp with time zone NOT NULL DEFAULT now(),
-            "ExecutedAt"  timestamp with time zone,
-            CONSTRAINT "PK_DeploymentJobs" PRIMARY KEY ("Id"),
-            CONSTRAINT "FK_DeploymentJobs_Packages" FOREIGN KEY ("PackageId")
-                REFERENCES "SoftwarePackages" ("Id") ON DELETE CASCADE,
-            CONSTRAINT "FK_DeploymentJobs_Devices" FOREIGN KEY ("DeviceId")
-                REFERENCES "Devices" ("Id") ON DELETE CASCADE
+    await platformDb.Database.ExecuteSqlRawAsync("""
+        CREATE TABLE IF NOT EXISTS "TenantExtensions" (
+            "Id"                  uuid NOT NULL DEFAULT gen_random_uuid(),
+            "TenantId"            uuid NOT NULL,
+            "DaysAdded"           integer NOT NULL DEFAULT 0,
+            "Reason"              text,
+            "SendToast"           boolean NOT NULL DEFAULT false,
+            "SendEmail"           boolean NOT NULL DEFAULT false,
+            "CreatedByUsername"   text NOT NULL DEFAULT '',
+            "CreatedAt"           timestamp with time zone NOT NULL DEFAULT now(),
+            CONSTRAINT "PK_TenantExtensions" PRIMARY KEY ("Id"),
+            CONSTRAINT "FK_TenantExtensions_Tenants" FOREIGN KEY ("TenantId")
+                REFERENCES "Tenants" ("Id") ON DELETE CASCADE
         )
         """);
-
-    db.Database.ExecuteSqlRaw("""
-        CREATE INDEX IF NOT EXISTS "IX_DeploymentJobs_DeviceId_Status"
-            ON "DeploymentJobs" ("DeviceId", "Status")
+    await platformDb.Database.ExecuteSqlRawAsync("""
+        CREATE INDEX IF NOT EXISTS "IX_TenantExtensions_TenantId" ON "TenantExtensions" ("TenantId")
         """);
 
-    // Script Library
-    db.Database.ExecuteSqlRaw("""
-        CREATE TABLE IF NOT EXISTS "ScriptTemplates" (
-            "Id"          uuid NOT NULL DEFAULT gen_random_uuid(),
-            "Name"        text NOT NULL DEFAULT '',
-            "Description" text NOT NULL DEFAULT '',
-            "Script"      text NOT NULL DEFAULT '',
-            "CreatedBy"   text NOT NULL DEFAULT '',
-            "CreatedAt"   timestamp with time zone NOT NULL DEFAULT now(),
-            CONSTRAINT "PK_ScriptTemplates" PRIMARY KEY ("Id")
-        )
-        """);
-
-    // LDAP fields on Users table
-    db.Database.ExecuteSqlRaw("""ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "IsLocal" boolean NOT NULL DEFAULT true""");
-    db.Database.ExecuteSqlRaw("""ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "LdapDn" text""");
-    db.Database.ExecuteSqlRaw("""ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "DisplayName" text""");
-    db.Database.ExecuteSqlRaw("""ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "Email" text""");
-
-    // Indexes on FK columns used in every device-detail and check-in query
-    db.Database.ExecuteSqlRaw("""
-        CREATE INDEX IF NOT EXISTS "IX_DeviceCheckins_DeviceId"
-            ON "DeviceCheckins" ("DeviceId")
-        """);
-    db.Database.ExecuteSqlRaw("""
-        CREATE INDEX IF NOT EXISTS "IX_InstalledSoftware_DeviceId"
-            ON "InstalledSoftware" ("DeviceId")
-        """);
-    db.Database.ExecuteSqlRaw("""
-        CREATE INDEX IF NOT EXISTS "IX_DeviceNotes_DeviceId"
-            ON "DeviceNotes" ("DeviceId")
-        """);
-    db.Database.ExecuteSqlRaw("""
-        CREATE INDEX IF NOT EXISTS "IX_DeviceCommands_DeviceId_Status"
-            ON "DeviceCommands" ("DeviceId", "Status")
-        """);
-    db.Database.ExecuteSqlRaw("""
-        CREATE INDEX IF NOT EXISTS "IX_SoftwareAlerts_DeviceId_AcknowledgedAt"
-            ON "SoftwareAlerts" ("DeviceId", "AcknowledgedAt")
-        """);
-    db.Database.ExecuteSqlRaw("""
-        CREATE INDEX IF NOT EXISTS "IX_AuditLogs_Timestamp"
-            ON "AuditLogs" ("Timestamp" DESC)
-        """);
-    db.Database.ExecuteSqlRaw("""
-        ALTER TABLE "Devices"
-            ADD COLUMN IF NOT EXISTS "EventLogErrorsJson" text NOT NULL DEFAULT '[]'
-        """);
-    db.Database.ExecuteSqlRaw("""
-        ALTER TABLE "Groups"
-            ADD COLUMN IF NOT EXISTS "NotificationSettingsJson" text NULL
-        """);
-
-    tx.Commit();
-
-    // Seed default software packages — adds missing entries by name, never overwrites existing
-    var existingNames = db.SoftwarePackages.Select(p => p.Name).ToHashSet();
-    var seedPackages = new[]
+    // Seed default super admin if none exists
+    if (!await platformDb.SuperAdminUsers.AnyAsync())
     {
-        new HackITSentry.Server.Models.SoftwarePackage { Name = "Google Chrome",        Version = "latest", Type = "winget", InstallCmd = "Google.Chrome",                  Description = "Webbrowser von Google",                  CreatedBy = "system" },
-        new HackITSentry.Server.Models.SoftwarePackage { Name = "Mozilla Firefox",      Version = "latest", Type = "winget", InstallCmd = "Mozilla.Firefox",                Description = "Open-Source Webbrowser",                 CreatedBy = "system" },
-        new HackITSentry.Server.Models.SoftwarePackage { Name = "7-Zip",                Version = "latest", Type = "winget", InstallCmd = "7zip.7zip",                      Description = "Freie Archivierungssoftware",            CreatedBy = "system" },
-        new HackITSentry.Server.Models.SoftwarePackage { Name = "VLC Media Player",     Version = "latest", Type = "winget", InstallCmd = "VideoLAN.VLC",                   Description = "Universeller Medienabspieler",           CreatedBy = "system" },
-        new HackITSentry.Server.Models.SoftwarePackage { Name = "Notepad++",            Version = "latest", Type = "winget", InstallCmd = "Notepad++.Notepad++",            Description = "Erweiterter Texteditor",                 CreatedBy = "system" },
-        new HackITSentry.Server.Models.SoftwarePackage { Name = "Adobe Acrobat Reader", Version = "latest", Type = "winget", InstallCmd = "Adobe.Acrobat.Reader.64-bit",    Description = "PDF-Betrachter von Adobe",               CreatedBy = "system" },
-        new HackITSentry.Server.Models.SoftwarePackage { Name = "Microsoft Teams",      Version = "latest", Type = "winget", InstallCmd = "Microsoft.Teams",                Description = "Kommunikationsplattform von Microsoft",  CreatedBy = "system" },
-        new HackITSentry.Server.Models.SoftwarePackage { Name = "Zoom",                 Version = "latest", Type = "winget", InstallCmd = "Zoom.Zoom",                      Description = "Videokonferenz-Software",                CreatedBy = "system" },
-        new HackITSentry.Server.Models.SoftwarePackage { Name = "Visual Studio Code",   Version = "latest", Type = "winget", InstallCmd = "Microsoft.VisualStudioCode",     Description = "Code-Editor von Microsoft",              CreatedBy = "system" },
-        new HackITSentry.Server.Models.SoftwarePackage { Name = "KeePass",              Version = "latest", Type = "winget", InstallCmd = "DominikReichl.KeePass",          Description = "Open-Source Passwortmanager",            CreatedBy = "system" },
-        new HackITSentry.Server.Models.SoftwarePackage { Name = "Greenshot",            Version = "latest", Type = "winget", InstallCmd = "Greenshot.Greenshot",            Description = "Screenshot-Tool",                        CreatedBy = "system" },
-        new HackITSentry.Server.Models.SoftwarePackage { Name = "WinRAR",               Version = "latest", Type = "winget", InstallCmd = "RARLab.WinRAR",                  Description = "Archivierungssoftware",                  CreatedBy = "system" },
-        new HackITSentry.Server.Models.SoftwarePackage { Name = "PuTTY",                Version = "latest", Type = "winget", InstallCmd = "PuTTY.PuTTY",                    Description = "SSH- und Telnet-Client",                 CreatedBy = "system" },
-        new HackITSentry.Server.Models.SoftwarePackage { Name = "HWiNFO",               Version = "latest", Type = "winget", InstallCmd = "REALiX.HWiNFO",                  Description = "Hardware-Diagnose und Monitoring",       CreatedBy = "system" },
-        new HackITSentry.Server.Models.SoftwarePackage { Name = "Bitwarden",             Version = "latest", Type = "winget", InstallCmd = "Bitwarden.Bitwarden",             Description = "Open-Source Passwortmanager",            CreatedBy = "system" },
-        new HackITSentry.Server.Models.SoftwarePackage { Name = "WireGuard",             Version = "latest", Type = "winget", InstallCmd = "WireGuard.WireGuard",             Description = "Moderner, schneller VPN-Client",         CreatedBy = "system" },
-        new HackITSentry.Server.Models.SoftwarePackage { Name = "OpenVPN",               Version = "latest", Type = "winget", InstallCmd = "OpenVPNTechnologies.OpenVPN",     Description = "Open-Source VPN-Client",                 CreatedBy = "system" },
-        new HackITSentry.Server.Models.SoftwarePackage { Name = "TeamViewer",            Version = "latest", Type = "winget", InstallCmd = "TeamViewer.TeamViewer",           Description = "Remote-Desktop und Fernwartung",         CreatedBy = "system" },
-        new HackITSentry.Server.Models.SoftwarePackage { Name = "AnyDesk",               Version = "latest", Type = "winget", InstallCmd = "AnyDeskSoftwareGmbH.AnyDesk",    Description = "Schnelle Remote-Desktop-Software",       CreatedBy = "system" },
-        new HackITSentry.Server.Models.SoftwarePackage { Name = "RustDesk",              Version = "latest", Type = "winget", InstallCmd = "RustDesk.RustDesk",              Description = "Open-Source Remote-Desktop (self-hosted)", CreatedBy = "system" },
-    };
-    var toAdd = seedPackages.Where(p => !existingNames.Contains(p.Name)).ToList();
-    if (toAdd.Count > 0)
-    {
-        db.SoftwarePackages.AddRange(toAdd);
-        db.SaveChanges();
+        platformDb.SuperAdminUsers.Add(new HITSight.Server.Models.SuperAdminUser
+        {
+            Username = "superadmin",
+            PasswordHash = BCrypt.Net.BCrypt.HashPassword("changeme"),
+        });
+        await platformDb.SaveChangesAsync();
+        app.Logger.LogWarning("Created default super admin 'superadmin' with password 'changeme' — change immediately!");
     }
 
-    // Bootstrap RuntimeSettings: env/appsettings first, then DB overrides
-    var runtimeSettings = app.Services.GetRequiredService<RuntimeSettings>();
-    runtimeSettings.LoadFromConfig(app.Configuration);
-    var dbSettings = db.AppSettings.ToList();
-    runtimeSettings.LoadFromDb(dbSettings);
+    // Run migrations for all existing tenant DBs
+    var tenants = await platformDb.Tenants.Where(t => t.IsActive).AsNoTracking().ToListAsync();
+    var startupLogger = app.Services.GetRequiredService<ILogger<Program>>();
+    foreach (var tenant in tenants)
+    {
+        try
+        {
+            var tenantCs = TenantResolutionMiddleware.BuildTenantConnectionString(platformConnStr, tenant.DbName);
+            await using var tenantDb = new AppDbContext(
+                new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(tenantCs).Options);
+            await DbMigrator.RunAsync(tenantDb);
+            await DbMigrator.SeedDefaultPackagesAsync(tenantDb);
+        }
+        catch (Exception ex)
+        {
+            startupLogger.LogError(ex, "Failed to run migrations for tenant {Slug}", tenant.Slug);
+        }
+    }
 }
 
 if (app.Environment.IsDevelopment())
@@ -522,6 +316,17 @@ if (app.Environment.IsDevelopment())
 app.UseResponseCompression();
 app.UseRateLimiter();
 
+// Serve agent binaries as static files
+var downloadsPath = Path.Combine(AppContext.BaseDirectory, "downloads");
+Directory.CreateDirectory(downloadsPath);
+app.UseStaticFiles(new StaticFileOptions
+{
+    FileProvider = new Microsoft.Extensions.FileProviders.PhysicalFileProvider(downloadsPath),
+    RequestPath = "/downloads",
+    ServeUnknownFileTypes = true,
+    DefaultContentType = "application/octet-stream"
+});
+
 app.Use(async (ctx, next) =>
 {
     ctx.Response.Headers["X-Content-Type-Options"] = "nosniff";
@@ -531,6 +336,10 @@ app.Use(async (ctx, next) =>
 });
 
 app.UseCors();
+
+// Tenant resolution runs BEFORE authentication so the correct DB is set per request
+app.UseMiddleware<TenantResolutionMiddleware>();
+
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();

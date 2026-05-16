@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace HackITSentry.Server.Services;
+namespace HITSight.Server.Services;
 
 /// <summary>
 /// Singleton that locates the installer binary and caches placeholder offsets
@@ -26,8 +26,8 @@ public sealed class InstallerService
     public InstallerService(ILogger<InstallerService> logger)
     {
         _logger = logger;
-        ExePath = Path.Combine(AppContext.BaseDirectory, "installer", "HackITSentry-Setup.exe");
-        MsiPath = Path.Combine(AppContext.BaseDirectory, "installer", "HackITSentry-Setup.msi");
+        ExePath = Path.Combine(AppContext.BaseDirectory, "installer", "HITSight-Setup.exe");
+        MsiPath = Path.Combine(AppContext.BaseDirectory, "installer", "HITSight-Setup.msi");
 
         if (File.Exists(MsiPath))
         {
@@ -86,14 +86,14 @@ public sealed class InstallerService
             total += n;
         }
 
-        var serverPrefix = Encoding.Unicode.GetBytes("HACKIT_SERVER_URL:");
-        var tokenPrefix  = Encoding.Unicode.GetBytes("HACKIT_INSTALL_TOK:");
+        var serverPrefix = Encoding.Unicode.GetBytes("HITSIGHT_SERVER_URL:");
+        var tokenPrefix  = Encoding.Unicode.GetBytes("HITSIGHT_INSTALL_TOK:");
 
         long serverIdx = FindPattern(buf, total, serverPrefix);
         long tokenIdx  = FindPattern(buf, total, tokenPrefix);
 
-        if (serverIdx < 0) throw new InvalidOperationException("HACKIT_SERVER_URL: placeholder not found in binary");
-        if (tokenIdx  < 0) throw new InvalidOperationException("HACKIT_INSTALL_TOK: placeholder not found in binary");
+        if (serverIdx < 0) throw new InvalidOperationException("HITSIGHT_SERVER_URL: placeholder not found in binary");
+        if (tokenIdx  < 0) throw new InvalidOperationException("HITSIGHT_INSTALL_TOK: placeholder not found in binary");
 
         // Value area starts right after the prefix
         ServerUrlValueOffset    = serverIdx + serverPrefix.Length;

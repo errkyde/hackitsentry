@@ -3,7 +3,7 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: hackit_sentry
+      POSTGRES_DB: hitsight
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
     volumes:
@@ -15,7 +15,7 @@ services:
       retries: 5
 
   server:
-    image: ghcr.io/errkyde/hackitsentry-server:latest
+    image: ghcr.io/errkyde/hitsight-server:latest
     build:
       context: .
       dockerfile: server/Dockerfile
@@ -28,7 +28,7 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ASPNETCORE_URLS: "http://+:${SERVER_PORT:-5000}"
-      ConnectionStrings__DefaultConnection: "Host=db;Database=hackit_sentry;Username=postgres;Password=${POSTGRES_PASSWORD:-postgres}"
+      ConnectionStrings__DefaultConnection: "Host=db;Database=hitsight;Username=postgres;Password=${POSTGRES_PASSWORD:-postgres}"
       Jwt__Key: "${JWT_KEY:-change-this-secret-in-production-must-be-at-least-32-chars!!}"
       Encryption__Key: "${ENCRYPTION_KEY:-change-this-aes-key-in-production-32chars!!}"
       CheckinIntervalMinutes: ${CHECKIN_INTERVAL_MINUTES:-30}
@@ -37,10 +37,27 @@ services:
       Email__Port: "${EMAIL_PORT:-587}"
       Email__Username: "${EMAIL_USERNAME:-}"
       Email__Password: "${EMAIL_PASSWORD:-}"
-      Email__From: "${EMAIL_FROM:-sentry@localhost}"
+      Email__From: "${EMAIL_FROM:-hitsight@localhost}"
       Email__To: "${EMAIL_TO:-}"
       Email__UseSsl: "${EMAIL_USE_SSL:-false}"
       RustDeskPublicHost: "${RUSTDESK_PUBLIC_HOST:-}"
+      # Platform / SaaS (optional)
+      Platform__ConnectionString: "${PLATFORM_CONNECTION_STRING:-}"
+      Platform__Domain: "${PLATFORM_DOMAIN:-}"
+      Platform__AdminSubdomain: "${ADMIN_SUBDOMAIN:-admin}"
+      Platform__JwtKey: "${PLATFORM_JWT_KEY:-}"
+      Platform__SupportEmail: "${PLATFORM_SUPPORT_EMAIL:-}"
+      Platform__SupportUrl: "${PLATFORM_SUPPORT_URL:-}"
+      # Stripe
+      Stripe__SecretKey: "${STRIPE_SECRET_KEY:-}"
+      Stripe__PublishableKey: "${STRIPE_PUBLISHABLE_KEY:-}"
+      Stripe__WebhookSecret: "${STRIPE_WEBHOOK_SECRET:-}"
+      Stripe__StarterMonthlyPriceId: "${STRIPE_STARTER_MONTHLY_PRICE_ID:-}"
+      Stripe__StarterYearlyPriceId: "${STRIPE_STARTER_YEARLY_PRICE_ID:-}"
+      Stripe__ProMonthlyPriceId: "${STRIPE_PRO_MONTHLY_PRICE_ID:-}"
+      Stripe__ProYearlyPriceId: "${STRIPE_PRO_YEARLY_PRICE_ID:-}"
+      Stripe__EnterpriseMonthlyPriceId: "${STRIPE_ENTERPRISE_MONTHLY_PRICE_ID:-}"
+      Stripe__EnterpriseYearlyPriceId: "${STRIPE_ENTERPRISE_YEARLY_PRICE_ID:-}"
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:${SERVER_PORT:-5000}/api/auth/login || exit 0"]
       interval: 10s
@@ -60,7 +77,7 @@ services:
       - ./downloads:/srv/downloads:ro
 
   frontend:
-    image: ghcr.io/errkyde/hackitsentry-frontend:latest
+    image: ghcr.io/errkyde/hitsight-frontend:latest
     build:
       context: .
       dockerfile: frontend/Dockerfile
@@ -71,6 +88,28 @@ services:
       - "${FRONTEND_PORT:-8030}:80"
     environment:
       SERVER_PORT: "${SERVER_PORT:-5000}"
+      VITE_PLATFORM_DOMAIN: "${PLATFORM_DOMAIN:-}"
+
+  # ── SaaS reverse proxy ──────────────────────────────────────────────────────
+  # Handles wildcard subdomain routing for *.${PLATFORM_DOMAIN}.
+  # In single-tenant mode this service is not needed — access the app directly
+  # via the frontend port (default 8030).
+  proxy:
+    image: nginx:alpine
+    restart: unless-stopped
+    depends_on:
+      - frontend
+    ports:
+      - "${PROXY_HTTP_PORT:-80}:80"
+      - "${PROXY_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./proxy.conf:/etc/nginx/templates/default.conf.template:ro
+      # Mount your wildcard TLS certificate here (see DEPLOYMENT.md):
+      # - /etc/letsencrypt/live/${PLATFORM_DOMAIN}/fullchain.pem:/etc/ssl/certs/fullchain.pem:ro
+      # - /etc/letsencrypt/live/${PLATFORM_DOMAIN}/privkey.pem:/etc/ssl/private/privkey.pem:ro
+    environment:
+      PLATFORM_DOMAIN: "${PLATFORM_DOMAIN:-localhost}"
+      NGINX_ENVSUBST_TEMPLATE_SUFFIX: ".template"
 
   rustdesk-hbbs:
     image: rustdesk/rustdesk-server:latest

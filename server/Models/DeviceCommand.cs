@@ -1,4 +1,4 @@
-namespace HackITSentry.Server.Models;
+namespace HITSight.Server.Models;
 
 public enum CommandType
 {
@@ -12,8 +12,7 @@ public enum CommandType
     InitRustDesk,
     ForceUpdate,
     InstallUpdates,
-    DeployPackage,
-    GetEventLogs
+    DeployPackage
 }
 
 public enum CommandStatus

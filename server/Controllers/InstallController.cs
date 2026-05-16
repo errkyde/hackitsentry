@@ -1,12 +1,12 @@
-using HackITSentry.Server.Data;
-using HackITSentry.Server.Models;
-using HackITSentry.Server.Services;
+using HITSight.Server.Data;
+using HITSight.Server.Models;
+using HITSight.Server.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
 
-namespace HackITSentry.Server.Controllers;
+namespace HITSight.Server.Controllers;
 
 [ApiController]
 public class InstallController : ControllerBase
@@ -99,7 +99,7 @@ public class InstallController : ControllerBase
 
         Response.ContentLength = _installer.FileSize;
         var stream = _installer.CreatePatchedStream(outpostUrl, token);
-        return File(stream, "application/octet-stream", "HackITSentry-Setup.exe");
+        return File(stream, "application/octet-stream", "HITSight-Setup.exe");
     }
 
     // ── Token management (auth required) ─────────────────────────────────
@@ -166,15 +166,15 @@ public class InstallController : ControllerBase
             ? _runtimeSettings.AgentServerUrl
             : (_config["OutpostPublicUrl"]?.TrimEnd('/') ?? $"{Request.Scheme}://{Request.Host}");
         var downloadUrl = $"{outpostUrl}/install/{token.Token}";
-        var senderName = User.FindFirstValue(ClaimTypes.Name) ?? "HackIT Sentry";
+        var senderName = User.FindFirstValue(ClaimTypes.Name) ?? "HITSight";
 
         var body = AlertEmailService.BuildHtml(
             "#2563eb", "Einladung",
-            "HackIT Sentry Agent installieren",
+            "HITSight Agent installieren",
             $"""
             <p style="margin:0 0 20px;font-size:14px;color:#3f3f46;line-height:1.6;">
               <strong style="color:#18181b;">{senderName}</strong> hat dich eingeladen,
-              den HackIT Sentry Monitoring-Agent auf diesem Gerät zu installieren.
+              den HITSight Monitoring-Agent auf diesem Gerät zu installieren.
             </p>
 
             <a href="{downloadUrl}"
@@ -195,7 +195,7 @@ public class InstallController : ControllerBase
             </p>
             """);
 
-        var error = await _email.SendToAsync(request.Email, "HackIT Sentry – Agent installieren", body);
+        var error = await _email.SendToAsync(request.Email, "HITSight – Agent installieren", body);
         if (error != null)
             return BadRequest(new { message = error });
 
@@ -260,7 +260,7 @@ public class InstallController : ControllerBase
 
         Response.ContentLength = _installer.FileSize;
         var stream = _installer.CreatePatchedStream(outpostUrl, token);
-        return File(stream, "application/octet-stream", "HackITSentry-Setup.exe");
+        return File(stream, "application/octet-stream", "HITSight-Setup.exe");
     }
 
     // Serves the raw MSI binary for the PS1 install script to download
@@ -280,21 +280,21 @@ public class InstallController : ControllerBase
 
         Response.ContentLength = _installer.MsiFileSize;
         return File(System.IO.File.OpenRead(_installer.MsiPath),
-            "application/octet-stream", "HackITSentry-Setup.msi");
+            "application/octet-stream", "HITSight-Setup.msi");
     }
 
     private static string BuildMsiInstallScript(string serverUrl, string deployKey) => $$"""
-        # HackIT Sentry Agent - automatische Installation
-        # Generiert von HackIT Sentry, idempotent (GPO-Startup-Script sicher)
+        # HITSight Agent - automatische Installation
+        # Generiert von HITSight, idempotent (GPO-Startup-Script sicher)
         $ErrorActionPreference = 'Stop'
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         $ServerUrl = '{{serverUrl}}'
         $DeployKey = '{{deployKey}}'
 
         # Bereits installiert? Abbruch.
-        if (Get-Service -Name 'HackITSentryAgent' -ErrorAction SilentlyContinue) { exit 0 }
+        if (Get-Service -Name 'HITSightAgent' -ErrorAction SilentlyContinue) { exit 0 }
 
-        $tmp = Join-Path $env:TEMP 'HackITSentry-Setup.msi'
+        $tmp = Join-Path $env:TEMP 'HITSight-Setup.msi'
         try {
             $wc = [System.Net.WebClient]::new()
             $wc.Headers.Add('X-Deploy-Key', $DeployKey)
@@ -360,7 +360,7 @@ public class InstallController : ControllerBase
         <head>
           <meta charset="UTF-8">
           <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>HackIT Sentry – {{title}}</title>
+          <title>HITSight – {{title}}</title>
           <style>
             * { box-sizing: border-box; margin: 0; padding: 0; }
             body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f0f0f; color: #e5e5e5; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 1rem; }
@@ -374,7 +374,7 @@ public class InstallController : ControllerBase
         <body>
           <div class="card">
             <div class="icon">{{icon}}</div>
-            <div class="brand">HackIT Sentry</div>
+            <div class="brand">HITSight</div>
             <h1>{{title}}</h1>
             <p>{{message}}</p>
           </div>
@@ -388,7 +388,7 @@ public class InstallController : ControllerBase
         <head>
           <meta charset="UTF-8">
           <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>HackIT Sentry – Agent installieren</title>
+          <title>HITSight – Agent installieren</title>
           <style>
             * { box-sizing: border-box; margin: 0; padding: 0; }
             body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f0f0f; color: #e5e5e5; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 1rem; }
@@ -408,7 +408,7 @@ public class InstallController : ControllerBase
         <body>
           <div class="card">
             <div class="logo">🛡️</div>
-            <div class="brand">HackIT Sentry</div>
+            <div class="brand">HITSight</div>
             <h1>Agent installieren</h1>
             <p class="sub">Lade den Monitoring-Agent herunter und führe ihn als Administrator aus.</p>
             <a class="btn" href="/install/{{token}}/download">⬇ Installer herunterladen</a>

@@ -1,7 +1,7 @@
-using HackITSentry.Server.Data;
-using HackITSentry.Server.Models;
+using HITSight.Server.Data;
+using HITSight.Server.Models;
 
-namespace HackITSentry.Server.Services;
+namespace HITSight.Server.Services;
 
 public class AuditService
 {

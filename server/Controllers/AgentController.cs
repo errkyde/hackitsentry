@@ -1,13 +1,13 @@
-using HackITSentry.Server.Data;
-using HackITSentry.Server.Models;
-using HackITSentry.Server.Services;
+using HITSight.Server.Data;
+using HITSight.Server.Models;
+using HITSight.Server.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using System.Text.Json;
 
-namespace HackITSentry.Server.Controllers;
+namespace HITSight.Server.Controllers;
 
 [ApiController]
 [Route("api/agent")]
@@ -80,7 +80,7 @@ public class AgentController : ControllerBase
         {
             var rows = new[] { (pending.Hostname, $"{pending.WindowsVersion} · {pending.CpuModel} · {pending.RamTotalGB} GB RAM", (string?)"Wartet auf Freigabe") };
             _ = _email.SendAsync(
-                "[HackIT Sentry] Neues Gerät wartet auf Genehmigung",
+                "[HITSight] Neues Gerät wartet auf Genehmigung",
                 AlertEmailService.BuildHtml(
                     "#ea580c", "Neues Gerät",
                     "Ein Gerät hat sich registriert und wartet auf Freigabe",
@@ -204,7 +204,7 @@ public class AgentController : ControllerBase
 
             if (!alreadyQueued)
             {
-                var downloadUrl = $"{Request.Scheme}://{Request.Host}/api/agent/update/download?key={Uri.EscapeDataString(device.AgentApiKey)}";
+                var downloadUrl = $"{(_config["OutpostPublicUrl"]?.TrimEnd('/') ?? $"{Request.Scheme}://{Request.Host}")}/api/agent/update/download?key={Uri.EscapeDataString(device.AgentApiKey)}";
                 _db.DeviceCommands.Add(new DeviceCommand
                 {
                     DeviceId = device.Id,
@@ -238,7 +238,7 @@ public class AgentController : ControllerBase
             hasPendingCommands,
             latestAgentVersion = latestVersion?.Version,
             agentDownloadUrl = latestVersion != null
-                ? $"{Request.Scheme}://{Request.Host}/api/agent/update/download?key={Uri.EscapeDataString(device.AgentApiKey)}"
+                ? $"{(_config["OutpostPublicUrl"]?.TrimEnd('/') ?? $"{Request.Scheme}://{Request.Host}")}/api/agent/update/download?key={Uri.EscapeDataString(device.AgentApiKey)}"
                 : null,
             rustDeskRelayServer = _runtimeSettings.RustDeskRelayHost,
             rustDeskPublicKey = _runtimeSettings.RustDeskPublicKey,
@@ -444,7 +444,7 @@ public class AgentController : ControllerBase
             ));
 
             await _email.SendAsync(
-                $"[HackIT Sentry] Wenig Speicherplatz auf {device.Hostname}",
+                $"[HITSight] Wenig Speicherplatz auf {device.Hostname}",
                 AlertEmailService.BuildHtml(
                     "#ea580c", "Speicherplatz-Warnung",
                     $"Kritisch wenig Speicherplatz auf {device.Hostname}",
@@ -503,7 +503,7 @@ public class AgentController : ControllerBase
                 issues.Add(("Signatur-Alter", $"{sigAge.Value} Tage (Schwellwert: {threshold})", null));
 
             await _email.SendAsync(
-                $"[HackIT Sentry] Antivirus-Problem auf {device.Hostname}",
+                $"[HITSight] Antivirus-Problem auf {device.Hostname}",
                 AlertEmailService.BuildHtml(
                     "#dc2626", "Antivirus-Alert",
                     $"Sicherheitsproblem erkannt auf {device.Hostname}",
@@ -561,7 +561,7 @@ public class AgentController : ControllerBase
                         ]);
 
                     await _email.SendAsync(
-                        $"[HackIT Sentry] Blacklisted Software auf {device.Hostname}",
+                        $"[HITSight] Blacklisted Software auf {device.Hostname}",
                         AlertEmailService.BuildHtml(
                             "#dc2626", "Software-Alert",
                             $"Unerlaubte Software erkannt",
@@ -590,11 +590,11 @@ public class AgentController : ControllerBase
         var latest = await _db.AgentVersions.Where(v => v.IsLatest).FirstOrDefaultAsync();
         if (latest == null) return NotFound(new { message = "No latest version available." });
 
-        var filePath = Path.Combine(AppContext.BaseDirectory, "downloads", $"HackITSentry-Agent-{latest.Version}.exe");
+        var filePath = Path.Combine(AppContext.BaseDirectory, "downloads", $"HITSight-Agent-{latest.Version}.exe");
         if (!System.IO.File.Exists(filePath))
             return NotFound(new { message = "Agent binary not found on server." });
 
-        return PhysicalFile(filePath, "application/octet-stream", $"HackITSentry-Agent-{latest.Version}.exe");
+        return PhysicalFile(filePath, "application/octet-stream", $"HITSight-Agent-{latest.Version}.exe");
     }
 
     private async Task<Device?> GetDeviceByApiKey()

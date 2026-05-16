@@ -4,11 +4,11 @@
     <TargetFramework>net8.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <RootNamespace>HackITSentry.Agent</RootNamespace>
-    <UserSecretsId>hackit-sentry-agent</UserSecretsId>
+    <RootNamespace>HITSight.Agent</RootNamespace>
+    <UserSecretsId>hitsight-agent</UserSecretsId>
     <RuntimeIdentifiers>win-x64;win-x86</RuntimeIdentifiers>
-    <Version>1.0.25</Version>
-    <AssemblyVersion>1.0.25.0</AssemblyVersion>
+    <Version>1.0.29</Version>
+    <AssemblyVersion>1.0.29.0</AssemblyVersion>
   </PropertyGroup>
 
   <ItemGroup>

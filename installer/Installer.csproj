@@ -7,14 +7,14 @@
     <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
-    <AssemblyName>HackITSentry-Setup</AssemblyName>
+    <AssemblyName>HITSight-Setup</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="Resources\HackITSentry.Agent.exe">
+    <EmbeddedResource Include="Resources\HITSight.Agent.exe">
       <LogicalName>agent.exe</LogicalName>
     </EmbeddedResource>
   </ItemGroup>

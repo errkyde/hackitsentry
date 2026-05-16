@@ -9,12 +9,12 @@ import {
 import {
   auth, users, settings, software, audit, agentVersions, devices as devicesApi,
   notifications, customFields, deployKeys as deployKeysApi, scriptTemplates,
-  softwarePackages,
+  softwarePackages, tenantInfo as tenantInfoApi,
   type AppUser, type EmailSettingsInput, type BlacklistEntry,
   type AuditLogEntry, type AgentVersion, type RustDeskSettings,
   type NotificationDefaults, type DeviceNotificationOverride,
   type CustomFieldDefinition, type DeployKey, type ScriptTemplate,
-  type SoftwarePackage as SoftwarePackageType, type LdapSettings,
+  type SoftwarePackage as SoftwarePackageType, type LdapSettings, type TenantInfo,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -32,7 +32,7 @@ type Section =
   | "fernzugriff" | "scripts" | "packages"
   | "ldap"
   | "benutzer" | "protokoll"
-  | "konto";
+  | "konto" | "abonnement";
 
 const adminNavGroups: { label: string | null; items: { id: Section; label: string; icon: React.ElementType }[] }[] = [
   {
@@ -117,7 +117,7 @@ export function Settings() {
 
   // --- Email settings ---
   const [emailForm, setEmailForm] = useState<EmailSettingsInput>({
-    host: "", port: 587, username: "", password: "", from: "sentry@localhost", to: "", useSsl: false,
+    host: "", port: 587, username: "", password: "", from: "hitsight@localhost", to: "", useSsl: false,
   });
   const [emailHasPassword, setEmailHasPassword] = useState(false);
   const [emailLoading, setEmailLoading] = useState(false);
@@ -208,6 +208,10 @@ export function Settings() {
   const [scriptBody, setScriptBody] = useState("");
   const [scriptLoading, setScriptLoading] = useState(false);
 
+  // --- Tenant subscription info ---
+  const [tInfo, setTInfo] = useState<TenantInfo | null>(null);
+  const isPlatform = !!(import.meta.env.VITE_PLATFORM_DOMAIN);
+
   // --- LDAP ---
   const [ldap, setLdap] = useState<LdapSettings>({
     enabled: false, host: "", port: 389, transport: "TCP" as const, ignoreCertificateErrors: false,
@@ -268,6 +272,7 @@ export function Settings() {
     notifications.getDeviceOverrides().then(setNotifyOverrides).catch(() => {});
     settings.getLdap().then(setLdap).catch(() => {});
     devicesApi.list().then(list => setAllDevices(list.items.map(d => ({ id: d.id, hostname: d.hostname, description: d.description })))).catch(() => {});
+    tenantInfoApi.get().then(setTInfo).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -705,7 +710,8 @@ export function Settings() {
           ))}
         </nav>
 
-        <div className="px-2 py-3 border-t">
+        <div className="px-2 py-3 border-t space-y-0.5">
+          {isPlatform && <NavItem id="abonnement" label="Abonnement" icon={Building2} />}
           <NavItem id="konto" label="Konto" icon={KeyRound} />
         </div>
       </aside>
@@ -995,9 +1001,9 @@ $wc.DownloadString('${agentServerUrl || "https://api.example.com"}/install/deplo
                       </p>
                       <pre className="text-xs font-mono overflow-x-auto whitespace-pre bg-background border rounded px-3 py-2">{`Invoke-WebRequest -Uri "${agentServerUrl || "https://api.example.com"}/install/deploy/msi" \`
   -Headers @{ "X-Deploy-Key" = "DEPLOY_KEY" } \`
-  -OutFile "HackITSentry-Setup.msi"
+  -OutFile "HITSight-Setup.msi"
 
-msiexec /i "HackITSentry-Setup.msi" \`
+msiexec /i "HITSight-Setup.msi" \`
   SERVERURL="${agentServerUrl || "https://api.example.com"}" \`
   DEPLOYKEY="DEPLOY_KEY" \`
   /quiet /norestart`}</pre>
@@ -1007,8 +1013,8 @@ msiexec /i "HackITSentry-Setup.msi" \`
                       <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Fallback (EXE, ohne MSI)</p>
                       <pre className="text-xs font-mono overflow-x-auto whitespace-pre bg-background border rounded px-3 py-2">{`Invoke-WebRequest -Uri "${agentServerUrl || "https://api.example.com"}/install/deploy/download" \`
   -Headers @{ "X-Deploy-Key" = "DEPLOY_KEY" } \`
-  -OutFile "$env:TEMP\\HackITSentry-Setup.exe"
-Start-Process "$env:TEMP\\HackITSentry-Setup.exe" -Verb RunAs -Wait`}</pre>
+  -OutFile "$env:TEMP\\HITSight-Setup.exe"
+Start-Process "$env:TEMP\\HITSight-Setup.exe" -Verb RunAs -Wait`}</pre>
                     </div>
 
                   </div>
@@ -1201,7 +1207,7 @@ Start-Process "$env:TEMP\\HackITSentry-Setup.exe" -Verb RunAs -Wait`}</pre>
                     <div className="grid grid-cols-2 gap-3">
                       <div className="space-y-1.5">
                         <Label>Absender (From)</Label>
-                        <Input placeholder="sentry@example.com" value={emailForm.from} onChange={e => setEmailForm(f => ({ ...f, from: e.target.value }))} />
+                        <Input placeholder="hitsight@example.com" value={emailForm.from} onChange={e => setEmailForm(f => ({ ...f, from: e.target.value }))} />
                       </div>
                       <div className="space-y-1.5">
                         <Label>Empfänger (To)</Label>
@@ -1506,7 +1512,7 @@ Start-Process "$env:TEMP\\HackITSentry-Setup.exe" -Verb RunAs -Wait`}</pre>
                     <div className="space-y-1.5">
                       <Label>Relay-Host</Label>
                       <Input
-                        placeholder="z.B. sentry.example.com"
+                        placeholder="z.B. hitsight.example.com"
                         value={rustDesk.relayHost}
                         onChange={e => setRustDesk(r => ({ ...r, relayHost: e.target.value }))}
                       />
@@ -1768,7 +1774,7 @@ Start-Process "$env:TEMP\\HackITSentry-Setup.exe" -Verb RunAs -Wait`}</pre>
                     <p className="text-sm font-medium">Service-Account (für Suche)</p>
                     <div className="space-y-1.5">
                       <Label>Bind DN <span className="text-xs text-muted-foreground">(leer = anonymer Bind)</span></Label>
-                      <Input value={ldap.bindDn} onChange={e => setLdap(p => ({ ...p, bindDn: e.target.value }))} placeholder="CN=svc-sentry,OU=Service,DC=example,DC=com" />
+                      <Input value={ldap.bindDn} onChange={e => setLdap(p => ({ ...p, bindDn: e.target.value }))} placeholder="CN=svc-hitsight,OU=Service,DC=example,DC=com" />
                     </div>
                     <div className="space-y-1.5">
                       <Label>
@@ -2157,6 +2163,57 @@ Start-Process "$env:TEMP\\HackITSentry-Setup.exe" -Verb RunAs -Wait`}</pre>
           )}
 
           {/* ── Konto ─────────────────────────────────────────────────── */}
+          {activeSection === "abonnement" && isPlatform && (
+            <>
+              <h1 className="text-lg font-semibold">Abonnement</h1>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <Building2 className="h-4 w-4" />
+                    Aktueller Plan
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {tInfo ? (
+                    <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm max-w-sm">
+                      <dt className="text-muted-foreground">Plan</dt>
+                      <dd className="font-medium capitalize">{tInfo.plan}</dd>
+
+                      <dt className="text-muted-foreground">Geräte</dt>
+                      <dd className={tInfo.maxDevices !== null && tInfo.deviceCount >= tInfo.maxDevices ? "font-medium text-destructive" : "font-medium"}>
+                        {tInfo.deviceCount}{tInfo.maxDevices !== null ? ` / ${tInfo.maxDevices}` : ""}
+                      </dd>
+
+                      {tInfo.subscriptionStatus && (
+                        <>
+                          <dt className="text-muted-foreground">Status</dt>
+                          <dd className="font-medium capitalize">{tInfo.subscriptionStatus}</dd>
+                        </>
+                      )}
+
+                      {tInfo.trialEndsAt && (
+                        <>
+                          <dt className="text-muted-foreground">Trial bis</dt>
+                          <dd className="font-medium">{new Date(tInfo.trialEndsAt).toLocaleDateString("de-DE")}</dd>
+                        </>
+                      )}
+
+                      {tInfo.currentPeriodEndsAt && (
+                        <>
+                          <dt className="text-muted-foreground">Verlängert am</dt>
+                          <dd className="font-medium">{new Date(tInfo.currentPeriodEndsAt).toLocaleDateString("de-DE")}</dd>
+                        </>
+                      )}
+                    </dl>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">Lade Abonnementinformationen…</p>
+                  )}
+                </CardContent>
+              </Card>
+            </>
+          )}
+
           {activeSection === "konto" && (
             <>
               <h1 className="text-lg font-semibold">Konto</h1>

@@ -1,7 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 
-namespace HackITSentry.Server.Services;
+namespace HITSight.Server.Services;
 
 public class LicenseEncryptionService
 {

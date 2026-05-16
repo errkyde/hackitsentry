@@ -2,7 +2,7 @@
 FROM node:22-alpine AS build
 WORKDIR /app
 COPY frontend/package*.json ./
-RUN --mount=type=cache,id=npm-sentry,target=/root/.npm \
+RUN --mount=type=cache,id=npm-hitsight,target=/root/.npm \
     npm ci
 COPY frontend/ .
 RUN npm run build

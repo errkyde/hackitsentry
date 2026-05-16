@@ -1,4 +1,4 @@
-namespace HackITSentry.Server.Models;
+namespace HITSight.Server.Models;
 
 public class DeviceGroup
 {
@@ -9,6 +9,7 @@ public class DeviceGroup
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     public string? NotificationSettingsJson { get; set; }
+    public string? RustDeskOptionsJson { get; set; }
 
     public ICollection<Device> Devices { get; set; } = [];
 }

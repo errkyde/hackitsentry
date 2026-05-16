@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
 
-namespace HackITSentry.Server.Services;
+namespace HITSight.Server.Services;
 
 /// <summary>
 /// Singleton that lets the server instantly wake a waiting agent when a command is queued.

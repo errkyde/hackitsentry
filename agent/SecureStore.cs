@@ -2,7 +2,7 @@ using System.Runtime.Versioning;
 using System.Security.Cryptography;
 using System.Text;
 
-namespace HackITSentry.Agent;
+namespace HITSight.Agent;
 
 /// <summary>
 /// Stores sensitive agent data (ApiKey, ServerUrl) encrypted on disk using Windows DPAPI.
@@ -14,10 +14,17 @@ public static class SecureStore
 {
     private static readonly string StoreDir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-        "HackITSentry");
+        "HITSight");
 
-    private static string KeyFile    => Path.Combine(StoreDir, "agent.key");
-    private static string UrlFile    => Path.Combine(StoreDir, "server.url");
+    // Legacy store directories from previous branding — used only for one-time migration.
+    private static readonly string[] LegacyDirs =
+    [
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "HITGuard"),
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "HackITSentry"),
+    ];
+
+    private static string KeyFile => Path.Combine(StoreDir, "agent.key");
+    private static string UrlFile => Path.Combine(StoreDir, "server.url");
 
     // ── Public API ────────────────────────────────────────────────────────────
 
@@ -33,17 +40,18 @@ public static class SecureStore
 
     public static string? LoadApiKey()
     {
-        if (!File.Exists(KeyFile)) return null;
-        try
+        if (File.Exists(KeyFile))
+            return TryDecrypt(KeyFile);
+
+        // Migrate from legacy directory on first run after rename.
+        foreach (var dir in LegacyDirs)
         {
-            var encrypted = File.ReadAllBytes(KeyFile);
-            var plain = ProtectedData.Unprotect(encrypted, null, DataProtectionScope.LocalMachine);
-            return Encoding.UTF8.GetString(plain);
+            var legacy = Path.Combine(dir, "agent.key");
+            if (!File.Exists(legacy)) continue;
+            var value = TryDecrypt(legacy);
+            if (value != null) { SaveApiKey(value); return value; }
         }
-        catch
-        {
-            return null;
-        }
+        return null;
     }
 
     public static void SaveServerUrl(string url)
@@ -58,17 +66,29 @@ public static class SecureStore
 
     public static string? LoadServerUrl()
     {
-        if (!File.Exists(UrlFile)) return null;
+        if (File.Exists(UrlFile))
+            return TryDecrypt(UrlFile);
+
+        // Migrate from legacy directory on first run after rename.
+        foreach (var dir in LegacyDirs)
+        {
+            var legacy = Path.Combine(dir, "server.url");
+            if (!File.Exists(legacy)) continue;
+            var value = TryDecrypt(legacy);
+            if (value != null) { SaveServerUrl(value); return value; }
+        }
+        return null;
+    }
+
+    private static string? TryDecrypt(string path)
+    {
         try
         {
-            var encrypted = File.ReadAllBytes(UrlFile);
+            var encrypted = File.ReadAllBytes(path);
             var plain = ProtectedData.Unprotect(encrypted, null, DataProtectionScope.LocalMachine);
             return Encoding.UTF8.GetString(plain);
         }
-        catch
-        {
-            return null;
-        }
+        catch { return null; }
     }
 
     public static void Delete()

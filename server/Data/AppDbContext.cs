@@ -1,7 +1,7 @@
-using HackITSentry.Server.Models;
+using HITSight.Server.Models;
 using Microsoft.EntityFrameworkCore;
 
-namespace HackITSentry.Server.Data;
+namespace HITSight.Server.Data;
 
 public class AppDbContext : DbContext
 {

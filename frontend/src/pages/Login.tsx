@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Shield } from "lucide-react";
-import { auth } from "@/lib/api";
+import { auth, loginMessage } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -34,6 +34,11 @@ export function Login() {
       localStorage.setItem("token", data.token);
       localStorage.setItem("username", data.username);
       localStorage.setItem("role", data.role);
+      // Fetch login message from server (read-once) and persist for Layout to display
+      try {
+        const msg = await loginMessage.get();
+        if (msg.message) localStorage.setItem("loginMessage", msg.message);
+      } catch { /* non-fatal */ }
       navigate("/devices");
     } catch (err: any) {
       setError(err.message || (setupMode ? "Setup fehlgeschlagen" : "Login fehlgeschlagen"));
@@ -52,7 +57,7 @@ export function Login() {
             <Shield className="h-7 w-7 text-primary" />
           </div>
           <div className="text-center">
-            <h1 className="text-2xl font-bold tracking-tight">HackIT Sentry</h1>
+            <h1 className="text-2xl font-bold tracking-tight">HackIT Sight</h1>
             <p className="text-sm text-muted-foreground">Device Management Platform</p>
           </div>
         </div>

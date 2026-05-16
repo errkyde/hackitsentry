@@ -6,8 +6,8 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  SERVER_IMAGE: ghcr.io/errkyde/hackitsentry-server
-  FRONTEND_IMAGE: ghcr.io/errkyde/hackitsentry-frontend
+  SERVER_IMAGE: ghcr.io/errkyde/hitsight-server
+  FRONTEND_IMAGE: ghcr.io/errkyde/hitsight-frontend
 
 jobs:
   build-server:

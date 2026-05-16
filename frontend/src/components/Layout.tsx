@@ -2,15 +2,16 @@ import { useEffect, useState } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard, Monitor, Clock, Users, Layers, LogOut,
-  Shield, Settings, Package, Sun, Moon, Link, Plus, Menu, X
+  Shield, Settings, Package, Sun, Moon, Link, Plus, Menu, X, AlertTriangle
 } from "lucide-react";
-import { devices } from "@/lib/api";
+import { devices, tenantInfo, onboarding, type TenantInfo } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Toaster } from "@/components/Toaster";
 import { toast } from "@/lib/useToast";
 import { InstallTokenDialog } from "@/components/InstallTokenDialog";
+import { OnboardingModal } from "@/components/OnboardingModal";
 
 export function Layout() {
   const navigate = useNavigate();
@@ -18,6 +19,8 @@ export function Layout() {
   const [isDark, setIsDark] = useState(() => localStorage.getItem("theme") !== "light");
   const [installDialog, setInstallDialog] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [info, setInfo] = useState<TenantInfo | null>(null);
+  const [showOnboarding, setShowOnboarding] = useState(false);
 
   useEffect(() => {
     let lastCount: number | null = null;
@@ -54,6 +57,21 @@ export function Layout() {
     fetchCount();
     const interval = setInterval(fetchCount, 30_000);
     return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    // Show login message toast (written by admin, consumed once)
+    const msg = localStorage.getItem("loginMessage");
+    if (msg) {
+      localStorage.removeItem("loginMessage");
+      toast({ title: "Nachricht", description: msg, variant: "default" });
+    }
+
+    // Fetch tenant info (device limit, subscription) — non-fatal in single-tenant mode
+    tenantInfo.get().then(setInfo).catch(() => {});
+
+    // Show onboarding modal if not yet completed
+    onboarding.getStatus().then(d => { if (!d.done) setShowOnboarding(true); }).catch(() => {});
   }, []);
 
   const toggleTheme = () => {
@@ -94,7 +112,7 @@ export function Layout() {
             <Shield className="h-4 w-4 text-primary" />
           </div>
           <div>
-            <div className="text-sm font-semibold text-foreground">HackIT Sentry</div>
+            <div className="text-sm font-semibold text-foreground">HITSight</div>
             <div className="text-xs text-muted-foreground">Device Manager</div>
           </div>
         </div>
@@ -214,7 +232,7 @@ export function Layout() {
             <div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary/20">
               <Shield className="h-3.5 w-3.5 text-primary" />
             </div>
-            <span className="text-sm font-semibold">HackIT Sentry</span>
+            <span className="text-sm font-semibold">HITSight</span>
           </div>
           <button
             className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground p-1"
@@ -229,11 +247,29 @@ export function Layout() {
           </button>
         </header>
 
+        {/* Device limit warning banner */}
+        {info && info.maxDevices !== null && info.deviceCount >= info.maxDevices && (
+          <div className="shrink-0 flex items-center gap-2 px-4 py-2 bg-destructive/10 border-b border-destructive/20 text-sm text-destructive">
+            <AlertTriangle className="h-4 w-4 shrink-0" />
+            <span>
+              Gerätelimit erreicht ({info.deviceCount}/{info.maxDevices}). Neue Geräte können sich nicht registrieren.
+              {" "}<a href="/settings" className="underline font-medium">Upgrade</a>
+            </span>
+          </div>
+        )}
+
         <main className="flex-1 overflow-auto">
           <Outlet />
         </main>
       </div>
 
+      <OnboardingModal
+        open={showOnboarding}
+        onClose={async () => {
+          try { await onboarding.complete(); } catch { /* ignore */ }
+          setShowOnboarding(false);
+        }}
+      />
       <Toaster />
       <InstallTokenDialog open={installDialog} onClose={() => setInstallDialog(false)} />
     </div>

@@ -1,4 +1,4 @@
-# HackIT Sentry
+# HITSight
 
 Zentrales IT-Monitoring-System. Agenten auf Windows-Geräten melden sich regelmäßig beim Server.
 
@@ -19,8 +19,8 @@ Zentrales IT-Monitoring-System. Agenten auf Windows-Geräten melden sich regelm�
 | Name | Image | Port | Aufgabe |
 |------|-------|------|---------|
 | `db` | postgres:16-alpine | intern | Datenbank |
-| `server` | ghcr.io/errkyde/hackitsentry-server | intern :5000 | ASP.NET Core API |
-| `frontend` | ghcr.io/errkyde/hackitsentry-frontend | 8030 | React SPA + nginx-Proxy |
+| `server` | ghcr.io/errkyde/hitsight-server | intern :5000 | ASP.NET Core API |
+| `frontend` | ghcr.io/errkyde/hitsight-frontend | 8030 | React SPA + nginx-Proxy |
 | `outpost` | nginx:alpine | 8031 | Externer Zugang für Agenten |
 
 ## Deployment
@@ -35,7 +35,7 @@ In Portainer: *Stacks → Add stack → Repository*
 
 | Feld | Wert |
 |------|------|
-| Repository URL | `https://github.com/errkyde/hackitsentry` |
+| Repository URL | `https://github.com/errkyde/hitsight` |
 | Compose path | `docker-compose.yml` |
 
 **2. Env-Variablen setzen**
@@ -45,7 +45,7 @@ In Portainer: *Stacks → Add stack → Repository*
 | `POSTGRES_PASSWORD` | Beliebiges Passwort für die Datenbank |
 | `JWT_KEY` | Zufälliger String, mind. 32 Zeichen |
 | `ENCRYPTION_KEY` | Zufälliger String, **genau** 32 Zeichen |
-| `OUTPOST_PUBLIC_URL` | Extern erreichbare URL des Servers, z.B. `https://sentry.example.com` |
+| `OUTPOST_PUBLIC_URL` | Extern erreichbare URL des Servers, z.B. `https://hitsight.example.com` |
 
 Alle weiteren optionalen Variablen: siehe `.env.example`.
 
@@ -60,7 +60,7 @@ Bei jedem Push auf `main` bauen die GitHub Actions neue Images. Portainer/Dockha
 ### Manuell (ohne Portainer)
 
 ```bash
-git clone https://github.com/errkyde/hackitsentry && cd hackitsentry
+git clone https://github.com/errkyde/hitsight && cd hitsight
 ./setup.sh          # erzeugt .env mit zufälligen Secrets
 # OUTPOST_PUBLIC_URL in .env eintragen
 docker compose up -d
@@ -93,8 +93,8 @@ docker compose up -d
 ## Binary-Patching (InstallerService)
 
 Die `.exe` enthält UTF-16LE-Platzhalter:
-- `HACKIT_SERVER_URL:====...` — 433 Zeichen gesamt (18 Prefix + 415 Wert)
-- `HACKIT_INSTALL_TOK:===...` — 128 Zeichen gesamt (19 Prefix + 109 Wert)
+- `HITSIGHT_SERVER_URL:====...` — 433 Zeichen gesamt (18 Prefix + 415 Wert)
+- `HITSIGHT_INSTALL_TOK:===...` — 128 Zeichen gesamt (19 Prefix + 109 Wert)
 
 `InstallerService` scannt beim Start einmalig die Offsets (erste 15 MB).
 `PatchedFileStream` streamt die Datei und überschreibt die Slots on-the-fly — kein 138-MB-RAM-Load.
@@ -121,7 +121,7 @@ Domain muss per DNS-A-Record auf den Server zeigen, dann certbot ausführen.
 ## Projekt-Struktur
 
 ```
-sentry/
+hitsight/
 ├── server/                    ASP.NET Core 8 API
 │   ├── Controllers/
 │   │   ├── InstallController.cs    Download + Token-Verwaltung
@@ -135,7 +135,7 @@ sentry/
 │   ├── src/
 │   └── Dockerfile             nginx:alpine, Template via envsubst
 ├── agent/                     Windows-Agent (C#, win-x64)
-├── installer/                 NSIS-Installer (baut HackITSentry-Setup.exe)
+├── installer/                 NSIS-Installer (baut HITSight-Setup.exe)
 ├── outpost.conf               nginx-Config für Outpost-Container
 ├── docker-compose.yml
 ├── docker-compose.https.yml

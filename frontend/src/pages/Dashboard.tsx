@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Monitor, Wifi, WifiOff, Clock, Users, Layers,
-  AlertTriangle, ShieldAlert, CalendarX, Terminal, CheckCircle2, Download
+  AlertTriangle, ShieldAlert, CalendarX, CheckCircle2, Download, Hourglass
 } from "lucide-react";
 import { dashboard, software, type DashboardData, type SoftwareAlertItem } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -51,6 +51,8 @@ export function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [alerts, setAlerts] = useState<SoftwareAlertItem[]>([]);
   const [ackLoading, setAckLoading] = useState<string | null>(null);
+  const [cmdPage, setCmdPage] = useState(0);
+  const CMD_PAGE_SIZE = 10;
 
   const load = async () => {
     const [d, a] = await Promise.all([
@@ -141,7 +143,7 @@ export function Dashboard() {
 
       {/* Alert overview */}
       {(data.alerts.softwareAlerts > 0 || data.alerts.expiringLicenses > 0 ||
-        data.alerts.expiredLicenses > 0 || data.alerts.pendingCommands > 0 ||
+        data.alerts.expiredLicenses > 0 ||
         data.alerts.devicesWithUpdates > 0) && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
           {data.alerts.softwareAlerts > 0 && (
@@ -184,17 +186,6 @@ export function Dashboard() {
                 <div>
                   <p className="text-sm font-medium text-amber-500">{data.alerts.devicesWithUpdates} Gerät{data.alerts.devicesWithUpdates !== 1 ? "e" : ""} mit ausstehenden Updates</p>
                   <p className="text-xs text-muted-foreground">Windows Updates verfügbar</p>
-                </div>
-              </CardContent>
-            </Card>
-          )}
-          {data.alerts.pendingCommands > 0 && (
-            <Card className="border-blue-500/30 bg-blue-500/5">
-              <CardContent className="pt-4 pb-3 flex items-center gap-3">
-                <Terminal className="h-5 w-5 text-blue-500 shrink-0" />
-                <div>
-                  <p className="text-sm font-medium text-blue-500">{data.alerts.pendingCommands} Befehl{data.alerts.pendingCommands !== 1 ? "e" : ""} ausstehend</p>
-                  <p className="text-xs text-muted-foreground">Warten auf Agent</p>
                 </div>
               </CardContent>
             </Card>
@@ -258,6 +249,51 @@ export function Dashboard() {
                 </Card>
               ))}
             </div>
+          )}
+
+          {/* Pending Commands */}
+          {data.pendingCommandsList && data.pendingCommandsList.length > 0 && (
+            <>
+              <h2 className="text-sm font-semibold pt-2">Ausstehende Befehle</h2>
+              <Card>
+                <CardContent className="pt-4 pb-2">
+                  <div className="space-y-0">
+                    {data.pendingCommandsList.slice(cmdPage * CMD_PAGE_SIZE, (cmdPage + 1) * CMD_PAGE_SIZE).map(cmd => {
+                      const ageMs = Date.now() - new Date(cmd.createdAt).getTime();
+                      const ageMin = Math.floor(ageMs / 60000);
+                      const ageStr = ageMin < 60
+                        ? `vor ${ageMin} Min.`
+                        : ageMin < 1440
+                          ? `vor ${Math.floor(ageMin / 60)} Std.`
+                          : `vor ${Math.floor(ageMin / 1440)} Tag(en)`;
+                      return (
+                        <div key={cmd.id} className="flex items-center gap-3 py-2 border-b border-border/50 last:border-0 text-sm">
+                          <Hourglass className="h-3.5 w-3.5 text-blue-500 shrink-0" />
+                          <button
+                            className="font-medium hover:underline text-left w-32 shrink-0 truncate"
+                            onClick={() => navigate(`/devices/${cmd.deviceId}`)}
+                          >
+                            {cmd.deviceHostname}
+                          </button>
+                          <span className="font-mono text-xs text-primary flex-1">{cmd.commandType}</span>
+                          <span className="text-xs text-muted-foreground shrink-0">{cmd.issuedByUsername}</span>
+                          <span className="text-xs text-muted-foreground shrink-0 w-20 text-right">{ageStr}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {data.pendingCommandsList.length > CMD_PAGE_SIZE && (
+                    <div className="flex items-center justify-between pt-2 pb-1 text-xs text-muted-foreground">
+                      <span>Seite {cmdPage + 1} von {Math.ceil(data.pendingCommandsList.length / CMD_PAGE_SIZE)}</span>
+                      <div className="flex gap-1">
+                        <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" disabled={cmdPage === 0} onClick={() => setCmdPage(p => p - 1)}>‹ Zurück</Button>
+                        <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" disabled={(cmdPage + 1) * CMD_PAGE_SIZE >= data.pendingCommandsList.length} onClick={() => setCmdPage(p => p + 1)}>Weiter ›</Button>
+                      </div>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </>
           )}
 
           {/* Recent Audit Log */}

@@ -1,4 +1,4 @@
-namespace HackITSentry.Server.Services;
+namespace HITSight.Server.Services;
 
 /// <summary>
 /// Read-only stream that wraps a FileStream and applies byte patches on-the-fly.

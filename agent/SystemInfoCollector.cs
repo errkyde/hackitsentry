@@ -6,7 +6,7 @@ using System.Runtime.Versioning;
 using System.Text.Json;
 using Microsoft.Win32;
 
-namespace HackITSentry.Agent;
+namespace HITSight.Agent;
 
 [SupportedOSPlatform("windows")]
 public class SystemInfoCollector

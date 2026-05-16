@@ -1,12 +1,12 @@
-using HackITSentry.Server.Data;
-using HackITSentry.Server.Models;
-using HackITSentry.Server.Services;
+using HITSight.Server.Data;
+using HITSight.Server.Models;
+using HITSight.Server.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
 
-namespace HackITSentry.Server.Controllers;
+namespace HITSight.Server.Controllers;
 
 [ApiController]
 [Route("api/deployment")]

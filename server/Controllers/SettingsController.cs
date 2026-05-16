@@ -1,11 +1,11 @@
-using HackITSentry.Server.Data;
-using HackITSentry.Server.Models;
-using HackITSentry.Server.Services;
+using HITSight.Server.Data;
+using HITSight.Server.Models;
+using HITSight.Server.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
-namespace HackITSentry.Server.Controllers;
+namespace HITSight.Server.Controllers;
 
 [ApiController]
 [Route("api/settings")]
@@ -100,7 +100,7 @@ public class SettingsController : ControllerBase
         // Keep existing password if new one is empty (don't overwrite with blank)
         if (!string.IsNullOrEmpty(req.Password))
             _runtimeSettings.EmailPassword = req.Password;
-        _runtimeSettings.EmailFrom = req.From ?? "sentry@localhost";
+        _runtimeSettings.EmailFrom = req.From ?? "hitsight@localhost";
         _runtimeSettings.EmailTo = req.To ?? "";
         _runtimeSettings.EmailUseSsl = req.UseSsl;
 
@@ -126,11 +126,11 @@ public class SettingsController : ControllerBase
             return BadRequest(new { message = "E-Mail ist nicht konfiguriert." });
 
         var error = await _email.SendAsync(
-            "[HackIT Sentry] Test-E-Mail",
+            "[HITSight] Test-E-Mail",
             AlertEmailService.BuildHtml(
                 "#16a34a", "Test",
                 "E-Mail-Konfiguration erfolgreich",
-                "<p style='margin:0;font-size:14px;color:#3f3f46;'>Die E-Mail-Einstellungen von HackIT Sentry sind korrekt konfiguriert. Diese Nachricht dient zur Bestätigung.</p>"));
+                "<p style='margin:0;font-size:14px;color:#3f3f46;'>Die E-Mail-Einstellungen von HITSight sind korrekt konfiguriert. Diese Nachricht dient zur Bestätigung.</p>"));
 
         if (error != null)
             return BadRequest(new { message = $"Fehler: {error}" });
@@ -263,6 +263,7 @@ public class SettingsController : ControllerBase
             viewerGroup = _runtimeSettings.LdapViewerGroup,
             requireGroup = _runtimeSettings.LdapRequireGroup,
             useNestedGroups = _runtimeSettings.LdapUseNestedGroups,
+            hasCaCertificate = !string.IsNullOrEmpty(_runtimeSettings.LdapCaCertificate),
         });
     }
 
@@ -304,6 +305,7 @@ public class SettingsController : ControllerBase
             ["Ldap:ViewerGroup"] = _runtimeSettings.LdapViewerGroup,
             ["Ldap:RequireGroup"] = _runtimeSettings.LdapRequireGroup.ToString(),
             ["Ldap:UseNestedGroups"] = _runtimeSettings.LdapUseNestedGroups.ToString(),
+            ["Ldap:CaCertificate"] = _runtimeSettings.LdapCaCertificate,
         };
 
         foreach (var (key, value) in entries)
@@ -328,6 +330,46 @@ public class SettingsController : ControllerBase
         return BadRequest(new { message = $"Verbindung fehlgeschlagen: {error}" });
     }
 
+    // POST /api/settings/ldap/ca-certificate
+    [HttpPost("ldap/ca-certificate")]
+    public async Task<IActionResult> UploadCaCertificate([FromBody] CaCertificateRequest req)
+    {
+        var pem = req.Pem?.Trim() ?? "";
+        if (string.IsNullOrEmpty(pem))
+            return BadRequest(new { message = "Kein Zertifikat angegeben." });
+
+        // Validate the PEM is actually a valid X.509 certificate
+        try
+        {
+            var cert = new System.Security.Cryptography.X509Certificates.X509Certificate2(
+                System.Text.Encoding.UTF8.GetBytes(pem));
+            var subject = cert.Subject;
+        }
+        catch
+        {
+            return BadRequest(new { message = "Ungültiges Zertifikat. Bitte PEM-Format verwenden (-----BEGIN CERTIFICATE-----)." });
+        }
+
+        _runtimeSettings.LdapCaCertificate = pem;
+        var s = await _db.AppSettings.FindAsync("Ldap:CaCertificate");
+        if (s != null) s.Value = pem;
+        else _db.AppSettings.Add(new AppSetting { Key = "Ldap:CaCertificate", Value = pem });
+        await _db.SaveChangesAsync();
+        await _audit.LogAsync("settings.ldap.ca-cert.upload", "Settings", null, "CA-Zertifikat hochgeladen");
+        return Ok(new { message = "CA-Zertifikat gespeichert." });
+    }
+
+    // DELETE /api/settings/ldap/ca-certificate
+    [HttpDelete("ldap/ca-certificate")]
+    public async Task<IActionResult> DeleteCaCertificate()
+    {
+        _runtimeSettings.LdapCaCertificate = "";
+        var s = await _db.AppSettings.FindAsync("Ldap:CaCertificate");
+        if (s != null) { _db.AppSettings.Remove(s); await _db.SaveChangesAsync(); }
+        await _audit.LogAsync("settings.ldap.ca-cert.delete", "Settings", null, "CA-Zertifikat entfernt");
+        return Ok(new { message = "CA-Zertifikat entfernt." });
+    }
+
 }
 
 public record EmailSettingsRequest(
@@ -349,3 +391,4 @@ public record CheckinSettingsRequest(int CheckinIntervalMinutes);
 public record RustDeskSettingsRequest(string? RelayHost, string? PublicKey, bool AutoInstall, string? DownloadUrl, Dictionary<string, string>? GlobalOptions = null);
 public record AgentSettingsRequest(bool AutoUpdate);
 public record ServerUrlRequest(string? AgentServerUrl);
+public record CaCertificateRequest(string? Pem);

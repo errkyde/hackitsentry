@@ -1,11 +1,11 @@
-using HackITSentry.Server.Data;
-using HackITSentry.Server.Models;
-using HackITSentry.Server.Services;
+using HITSight.Server.Data;
+using HITSight.Server.Models;
+using HITSight.Server.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
-namespace HackITSentry.Server.Controllers;
+namespace HITSight.Server.Controllers;
 
 [ApiController]
 [Route("api/agent-versions")]
@@ -181,7 +181,7 @@ public class AgentVersionController : ControllerBase
     [Authorize]
     public async Task<IActionResult> Publish([FromServices] IConfiguration config, [FromBody] PublishRequest? request = null)
     {
-        var agentExe = Path.Combine(AppContext.BaseDirectory, "agent", "HackITSentry.Agent.exe");
+        var agentExe = Path.Combine(AppContext.BaseDirectory, "agent", "HITSight.Agent.exe");
         var versionFile = Path.Combine(AppContext.BaseDirectory, "agent", "agent-version.txt");
 
         if (!System.IO.File.Exists(agentExe))
@@ -194,7 +194,7 @@ public class AgentVersionController : ControllerBase
         var downloadsDir = Path.Combine(AppContext.BaseDirectory, "downloads");
         Directory.CreateDirectory(downloadsDir);
 
-        var outFileName = $"HackITSentry-Agent-{version}.exe";
+        var outFileName = $"HITSight-Agent-{version}.exe";
         var outPath = Path.Combine(downloadsDir, outFileName);
         System.IO.File.Copy(agentExe, outPath, overwrite: true);
 

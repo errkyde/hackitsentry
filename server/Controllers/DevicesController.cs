@@ -1,12 +1,12 @@
-using HackITSentry.Server.Data;
-using HackITSentry.Server.Models;
-using HackITSentry.Server.Services;
+using HITSight.Server.Data;
+using HITSight.Server.Models;
+using HITSight.Server.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
 
-namespace HackITSentry.Server.Controllers;
+namespace HITSight.Server.Controllers;
 
 [ApiController]
 [Route("api/devices")]
@@ -18,14 +18,16 @@ public class DevicesController : ControllerBase
     private readonly RuntimeSettings _runtimeSettings;
     private readonly AuditService _audit;
     private readonly AgentCommandNotifier _notifier;
+    private readonly ITenantContext _tenantCtx;
 
-    public DevicesController(AppDbContext db, LicenseEncryptionService encryption, RuntimeSettings runtimeSettings, AuditService audit, AgentCommandNotifier notifier)
+    public DevicesController(AppDbContext db, LicenseEncryptionService encryption, RuntimeSettings runtimeSettings, AuditService audit, AgentCommandNotifier notifier, ITenantContext tenantCtx)
     {
         _db = db;
         _encryption = encryption;
         _runtimeSettings = runtimeSettings;
         _audit = audit;
         _notifier = notifier;
+        _tenantCtx = tenantCtx;
     }
 
     // GET /api/devices
@@ -309,6 +311,14 @@ public class DevicesController : ControllerBase
             return NotFound();
         if (pending.Status != PendingDeviceStatus.Pending)
             return BadRequest(new { message = "Request is not pending" });
+
+        // Enforce device limit
+        if (_tenantCtx.MaxDevices != int.MaxValue)
+        {
+            var activeCount = await _db.Devices.CountAsync();
+            if (activeCount >= _tenantCtx.MaxDevices)
+                return StatusCode(429, new { error = "device_limit_reached", limit = _tenantCtx.MaxDevices });
+        }
 
         var apiKey = Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N");
 

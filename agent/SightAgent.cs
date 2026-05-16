@@ -4,22 +4,22 @@ using System.Reflection;
 using System.Runtime.Versioning;
 using System.Text.Json;
 
-namespace HackITSentry.Agent;
+namespace HITSight.Agent;
 
 [SupportedOSPlatform("windows")]
-public class SentryAgent : BackgroundService
+public class SightAgent : BackgroundService
 {
     private readonly AgentHttpClient _http;
     private readonly IHttpClientFactory _httpFactory;
     private readonly SystemInfoCollector _sysInfo;
     private readonly LicenseCollector _licenseCollector;
     private readonly IOptionsMonitor<AgentConfig> _config;
-    private readonly ILogger<SentryAgent> _logger;
+    private readonly ILogger<SightAgent> _logger;
     private readonly IConfiguration _fullConfig;
 
     private readonly string _stateFile = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-        "HackITSentry", "agent-state.json");
+        "HITSight", "agent-state.json");
 
     // Current agent version (set at build time via AssemblyInfo or hardcoded here)
     private static readonly string CurrentVersion =
@@ -34,14 +34,17 @@ public class SentryAgent : BackgroundService
     // Last successful check-in response — used by command handlers that need server settings
     private CheckinResponse? _lastCheckinResponse;
 
-    public SentryAgent(
+    private readonly IHostApplicationLifetime _lifetime;
+
+    public SightAgent(
         AgentHttpClient http,
         IHttpClientFactory httpFactory,
         SystemInfoCollector sysInfo,
         LicenseCollector licenseCollector,
         IOptionsMonitor<AgentConfig> config,
-        ILogger<SentryAgent> logger,
-        IConfiguration fullConfig)
+        ILogger<SightAgent> logger,
+        IConfiguration fullConfig,
+        IHostApplicationLifetime lifetime)
     {
         _http = http;
         _httpFactory = httpFactory;
@@ -50,15 +53,16 @@ public class SentryAgent : BackgroundService
         _config = config;
         _logger = logger;
         _fullConfig = fullConfig;
+        _lifetime = lifetime;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("HackIT Sentry Agent starting (v{Version})...", CurrentVersion);
+        _logger.LogInformation("HITSight Agent starting (v{Version})...", CurrentVersion);
 
         var resolvedUrl = SecureStore.LoadServerUrl()
             ?? RegistryConfig.GetServerUrl()
-            ?? _fullConfig["SentryAgent:ServerUrl"];
+            ?? _fullConfig["HITSightAgent:ServerUrl"];
 
         if (string.IsNullOrWhiteSpace(resolvedUrl))
         {
@@ -324,19 +328,20 @@ public class SentryAgent : BackgroundService
             rustDeskServiceNeeded = true; // will start after config is written
         }
 
-        // Configure RustDesk relay + public key BEFORE starting/restarting the service
-        // Version is included in the key so any agent update triggers a fresh reconfiguration
+        // Configure RustDesk relay + public key BEFORE starting/restarting the service.
+        // Config files are always rewritten (handles RustDesk auto-update resetting them).
+        // Service restart only happens when the effective settings actually change.
         if (!string.IsNullOrEmpty(response.RustDeskRelayServer) && IsRustDeskInstalled())
         {
             var optionsFingerprint = OptionsFingerprint(response.RustDeskDeviceOptions);
             var configKey = $"{response.RustDeskRelayServer}|{response.RustDeskPublicKey}|{optionsFingerprint}|fav{response.RustDeskForceApplyVersion ?? 0}|v{CurrentVersion}";
+            ConfigureRustDesk(response.RustDeskRelayServer, response.RustDeskPublicKey ?? "", response.RustDeskDeviceOptions);
             if (state.RustDeskConfiguredFor != configKey)
             {
-                ConfigureRustDesk(response.RustDeskRelayServer, response.RustDeskPublicKey ?? "", response.RustDeskDeviceOptions);
                 state.RustDeskConfiguredFor = configKey;
                 SaveState(state);
                 rustDeskServiceNeeded = true; // restart so RustDesk picks up new config
-                _logger.LogInformation("RustDesk relay/key configured.");
+                _logger.LogInformation("RustDesk relay/key configured (settings changed).");
             }
         }
         else if (!string.IsNullOrEmpty(response.RustDeskRelayServer) && !IsRustDeskInstalled())
@@ -396,12 +401,12 @@ public class SentryAgent : BackgroundService
             {
                 case "Restart":
                     _logger.LogInformation("Initiating system restart...");
-                    Process.Start("shutdown", "/r /t 10 /c \"HackIT Sentry: Remote restart\"");
+                    Process.Start("shutdown", "/r /t 10 /c \"HITSight: Remote restart\"");
                     return (true, "Restart initiated (10s delay)");
 
                 case "Shutdown":
                     _logger.LogInformation("Initiating system shutdown...");
-                    Process.Start("shutdown", "/s /t 10 /c \"HackIT Sentry: Remote shutdown\"");
+                    Process.Start("shutdown", "/s /t 10 /c \"HITSight: Remote shutdown\"");
                     return (true, "Shutdown initiated (10s delay)");
 
                 case "RunScript":
@@ -409,7 +414,7 @@ public class SentryAgent : BackgroundService
                     if (string.IsNullOrWhiteSpace(cmd.Parameters))
                         return (false, "No script content provided");
 
-                    var tempFile = Path.Combine(Path.GetTempPath(), $"sentry_cmd_{Guid.NewGuid():N}.ps1");
+                    var tempFile = Path.Combine(Path.GetTempPath(), $"hitsight_cmd_{Guid.NewGuid():N}.ps1");
                     await File.WriteAllTextAsync(tempFile, cmd.Parameters);
 
                     var psi = new ProcessStartInfo("powershell.exe",
@@ -624,54 +629,6 @@ public class SentryAgent : BackgroundService
                     return (true, $"Server URL updated to {newUrl}. Restarting...");
                 }
 
-                case "GetEventLogs":
-                {
-                    var count = int.TryParse(cmd.Parameters, out var n) ? Math.Clamp(n, 10, 500) : 100;
-                    var ps = $@"
-$count = {count}
-$results = @()
-try {{
-    $results += Get-WinEvent -FilterHashtable @{{LogName='Application'}} -MaxEvents 5000 -ErrorAction Stop |
-        Where-Object {{ $_.ProviderName -match 'HackIT|HackITSentry' }} |
-        Select-Object -First $count
-}} catch {{ }}
-try {{
-    $results += Get-WinEvent -FilterHashtable @{{LogName='System'; ProviderName='Service Control Manager'}} -MaxEvents 2000 -ErrorAction Stop |
-        Where-Object {{ $_.Message -match 'HackITSentryAgent' }} |
-        Select-Object -First 30
-}} catch {{ }}
-if ($results.Count -eq 0) {{
-    'Keine Eintraege fuer HackIT Sentry Agent gefunden.'
-    exit
-}}
-$results | Sort-Object TimeCreated -Descending | ForEach-Object {{
-    $level = switch ($_.Level) {{ 1{{'KRIT '}} 2{{'ERROR'}} 3{{'WARN '}} 4{{'INFO '}} 5{{'DEBUG'}} default{{""L$($_.Level)""}} }}
-    $time = $_.TimeCreated.ToString('dd.MM.yyyy HH:mm:ss')
-    $msg = ($_.Message -split ""`n"")[0].Trim() -replace ""`r"",''''
-    ""[$time] [$level] $msg""
-}}".Trim();
-                    var tempFile = Path.Combine(Path.GetTempPath(), $"sentry_evtlog_{Guid.NewGuid():N}.ps1");
-                    await File.WriteAllTextAsync(tempFile, ps);
-                    var psi = new ProcessStartInfo("powershell.exe",
-                        $"-NonInteractive -ExecutionPolicy Bypass -File \"{tempFile}\"")
-                    {
-                        RedirectStandardOutput = true,
-                        RedirectStandardError = true,
-                        UseShellExecute = false,
-                        CreateNoWindow = true
-                    };
-                    using var proc = Process.Start(psi);
-                    if (proc == null) { File.Delete(tempFile); return (false, "PowerShell konnte nicht gestartet werden"); }
-                    var output = await proc.StandardOutput.ReadToEndAsync();
-                    var error = await proc.StandardError.ReadToEndAsync();
-                    await proc.WaitForExitAsync();
-                    File.Delete(tempFile);
-                    var result = output.Trim();
-                    if (string.IsNullOrEmpty(result))
-                        result = string.IsNullOrEmpty(error) ? "Keine Eintraege gefunden." : $"Fehler: {error.Trim()}";
-                    return (true, result);
-                }
-
                 default:
                     return (false, $"Unknown command type: {cmd.CommandType}");
             }
@@ -687,7 +644,7 @@ $results | Sort-Object TimeCreated -Descending | ForEach-Object {{
     {
         try
         {
-            _logger.LogInformation("Uninstalling HackIT Sentry Agent...");
+            _logger.LogInformation("Uninstalling HITSight Agent...");
 
             if (notifyServer)
             {
@@ -702,16 +659,16 @@ $results | Sort-Object TimeCreated -Descending | ForEach-Object {{
             var installDir = AppContext.BaseDirectory;
             var dataDir = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-                "HackITSentry");
+                "HITSight");
 
             // Build self-deleting batch script
-            var bat = Path.Combine(Path.GetTempPath(), "hackit_uninstall.bat");
+            var bat = Path.Combine(Path.GetTempPath(), "hitsight_uninstall.bat");
             File.WriteAllText(bat,
                 "@echo off\r\n" +
                 "ping -n 4 127.0.0.1 > nul\r\n" +
-                "sc stop HackITSentryAgent > nul 2>&1\r\n" +
+                "sc stop HITSightAgent > nul 2>&1\r\n" +
                 "ping -n 3 127.0.0.1 > nul\r\n" +
-                "sc delete HackITSentryAgent > nul 2>&1\r\n" +
+                "sc delete HITSightAgent > nul 2>&1\r\n" +
                 $"rd /s /q \"{installDir}\" > nul 2>&1\r\n" +
                 $"rd /s /q \"{dataDir}\" > nul 2>&1\r\n" +
                 "del /f /q \"%~f0\"\r\n");
@@ -736,22 +693,16 @@ $results | Sort-Object TimeCreated -Descending | ForEach-Object {{
         {
             _logger.LogInformation("Downloading agent update v{Version} from {Url}...", newVersion, downloadUrl);
 
-            // Use the registered "SentryServer" client so IgnoreCertificateErrors is respected
-            var http = _httpFactory.CreateClient("SentryServer");
-            http.Timeout = TimeSpan.FromMinutes(10);
-            var apiKey = SecureStore.LoadApiKey();
-            if (!string.IsNullOrEmpty(apiKey))
-            {
-                http.DefaultRequestHeaders.Remove("X-Api-Key");
-                http.DefaultRequestHeaders.Add("X-Api-Key", apiKey);
-            }
+            // Use the dedicated download client — no BaseAddress, no X-Api-Key header,
+            // but inherits IgnoreCertificateErrors so self-signed certs still work.
+            var http = _httpFactory.CreateClient("Download");
 
             var updateDir = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-                "HackITSentry", "updates");
+                "HITSight", "updates");
             Directory.CreateDirectory(updateDir);
 
-            var newExe = Path.Combine(updateDir, $"HackITSentry.Agent-{newVersion}.exe");
+            var newExe = Path.Combine(updateDir, $"HITSight.Agent-{newVersion}.exe");
 
             // Stream to file — avoids loading 68 MB into RAM and is more resilient
             // to proxy/timeout issues that can cut GetByteArrayAsync mid-transfer.
@@ -763,17 +714,24 @@ $results | Sort-Object TimeCreated -Descending | ForEach-Object {{
                 await src.CopyToAsync(dst, ct);
             }
 
-            // Batch: wait → stop service → replace exe → start service → cleanup
+            // Batch: wait for service to stop → copy new exe → start service → cleanup
+            // Retries the copy in case the SCM briefly restarts the old binary.
             var installPath = Process.GetCurrentProcess().MainModule?.FileName
-                ?? Path.Combine(AppContext.BaseDirectory, "HackITSentry.Agent.exe");
-            var bat = Path.Combine(Path.GetTempPath(), "hackit_update.bat");
+                ?? Path.Combine(AppContext.BaseDirectory, "HITSight.Agent.exe");
+            var bat = Path.Combine(Path.GetTempPath(), "hitsight_update.bat");
             File.WriteAllText(bat,
                 "@echo off\r\n" +
+                "ping -n 8 127.0.0.1 > nul\r\n" +
+                "sc stop HITSightAgent > nul 2>&1\r\n" +
                 "ping -n 5 127.0.0.1 > nul\r\n" +
-                "sc stop HackITSentryAgent > nul 2>&1\r\n" +
-                "ping -n 3 127.0.0.1 > nul\r\n" +
-                $"copy /y \"{newExe}\" \"{installPath}\" > nul\r\n" +
-                "sc start HackITSentryAgent > nul 2>&1\r\n" +
+                ":copy_retry\r\n" +
+                $"copy /y \"{newExe}\" \"{installPath}\" > nul 2>&1\r\n" +
+                "if errorlevel 1 (\r\n" +
+                "  sc stop HITSightAgent > nul 2>&1\r\n" +
+                "  ping -n 4 127.0.0.1 > nul\r\n" +
+                "  goto copy_retry\r\n" +
+                ")\r\n" +
+                "sc start HITSightAgent > nul 2>&1\r\n" +
                 $"del /f /q \"{newExe}\"\r\n" +
                 "del /f /q \"%~f0\"\r\n");
 
@@ -783,8 +741,8 @@ $results | Sort-Object TimeCreated -Descending | ForEach-Object {{
                 UseShellExecute = false
             });
 
-            _logger.LogInformation("Update installer launched, exiting for replacement...");
-            Environment.Exit(0);
+            _logger.LogInformation("Update installer launched, stopping service gracefully for replacement...");
+            _lifetime.StopApplication();
         }
         catch (Exception ex)
         {
@@ -824,10 +782,10 @@ $results | Sort-Object TimeCreated -Descending | ForEach-Object {{
             catch { }
         }
 
-        // Remove files from the old PowerShell installer path ("HackIT Sentry" with space)
+        // Remove files from the old PowerShell installer path ("HITSight" with space)
         var legacyDataDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-            "HackIT Sentry");
+            "HITSight");
         if (Directory.Exists(legacyDataDir))
         {
             try
@@ -858,10 +816,10 @@ $results | Sort-Object TimeCreated -Descending | ForEach-Object {{
             var doc = JsonDocument.Parse(json);
             var root = doc.RootElement.Deserialize<Dictionary<string, JsonElement>>() ?? [];
 
-            if (!root.TryGetValue("SentryAgent", out var section)) return;
-            var sentryAgent = section.Deserialize<Dictionary<string, object>>() ?? [];
-            sentryAgent["ServerUrl"] = newUrl;
-            root["SentryAgent"] = JsonSerializer.SerializeToElement(sentryAgent);
+            if (!root.TryGetValue("HITSightAgent", out var section)) return;
+            var agentConfig = section.Deserialize<Dictionary<string, object>>() ?? [];
+            agentConfig["ServerUrl"] = newUrl;
+            root["HITSightAgent"] = JsonSerializer.SerializeToElement(agentConfig);
             File.WriteAllText(configPath, JsonSerializer.Serialize(root,
                 new JsonSerializerOptions { WriteIndented = true }));
         }
@@ -875,13 +833,13 @@ $results | Sort-Object TimeCreated -Descending | ForEach-Object {{
     {
         try
         {
-            var bat = Path.Combine(Path.GetTempPath(), "hackit_restart.bat");
+            var bat = Path.Combine(Path.GetTempPath(), "hitsight_restart.bat");
             File.WriteAllText(bat,
                 "@echo off\r\n" +
                 "ping -n 4 127.0.0.1 > nul\r\n" +
-                "sc stop HackITSentryAgent > nul 2>&1\r\n" +
+                "sc stop HITSightAgent > nul 2>&1\r\n" +
                 "ping -n 3 127.0.0.1 > nul\r\n" +
-                "sc start HackITSentryAgent > nul 2>&1\r\n" +
+                "sc start HITSightAgent > nul 2>&1\r\n" +
                 "del /f /q \"%~f0\"\r\n");
 
             Process.Start(new ProcessStartInfo("cmd.exe", $"/c \"{bat}\"")
@@ -898,24 +856,30 @@ $results | Sort-Object TimeCreated -Descending | ForEach-Object {{
         }
     }
 
-    private static readonly string[] RustDeskTomlPaths =
-    [
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "RustDesk", "config", "RustDesk.toml"),
-        @"C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config\RustDesk.toml",
-        @"C:\Windows\ServiceProfiles\NetworkService\AppData\Roaming\RustDesk\config\RustDesk.toml",
-        @"C:\Windows\system32\config\systemprofile\AppData\Roaming\RustDesk\config\RustDesk.toml",
-    ];
+    // Returns all candidate config paths for a given RustDesk TOML filename.
+    // Covers: running-as-SYSTEM, LocalService/NetworkService service accounts,
+    // and all actual user profiles (for user-session or user-installed RustDesk).
+    private static IEnumerable<string> GetRustDeskTomlPaths(string filename)
+    {
+        yield return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "RustDesk", "config", filename);
+        yield return $@"C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config\{filename}";
+        yield return $@"C:\Windows\ServiceProfiles\NetworkService\AppData\Roaming\RustDesk\config\{filename}";
+        yield return $@"C:\Windows\system32\config\systemprofile\AppData\Roaming\RustDesk\config\{filename}";
 
-    // RustDesk 1.2+ uses RustDesk2.toml with an [options] section for server settings
-    private static readonly string[] RustDesk2TomlPaths =
-    [
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "RustDesk", "config", "RustDesk2.toml"),
-        @"C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config\RustDesk2.toml",
-        @"C:\Windows\ServiceProfiles\NetworkService\AppData\Roaming\RustDesk\config\RustDesk2.toml",
-        @"C:\Windows\system32\config\systemprofile\AppData\Roaming\RustDesk\config\RustDesk2.toml",
-    ];
+        // User-session / user-installed RustDesk: write to every profile where the config dir exists
+        const string usersRoot = @"C:\Users";
+        if (!Directory.Exists(usersRoot)) yield break;
+        foreach (var profile in Directory.EnumerateDirectories(usersRoot))
+        {
+            var name = Path.GetFileName(profile);
+            if (name is "Public" or "Default" or "Default User" or "All Users") continue;
+            var configDir = Path.Combine(profile, "AppData", "Roaming", "RustDesk", "config");
+            // Only target profiles where RustDesk config dir already exists
+            if (Directory.Exists(configDir))
+                yield return Path.Combine(configDir, filename);
+        }
+    }
 
     private static bool IsRustDeskInstalled()
     {
@@ -936,7 +900,7 @@ $results | Sort-Object TimeCreated -Descending | ForEach-Object {{
         {
             _logger.LogInformation("No download URL configured — fetching latest RustDesk release from GitHub...");
             using var http = new System.Net.Http.HttpClient();
-            http.DefaultRequestHeaders.UserAgent.ParseAdd("HackITSentry-Agent/1.0");
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("HITSight-Agent/1.0");
             http.Timeout = TimeSpan.FromSeconds(15);
 
             var json = await http.GetStringAsync(
@@ -1059,7 +1023,7 @@ $results | Sort-Object TimeCreated -Descending | ForEach-Object {{
         }
 
         // ── RustDesk.toml (flat format, backwards compat) ──────────────
-        foreach (var path in RustDeskTomlPaths)
+        foreach (var path in GetRustDeskTomlPaths("RustDesk.toml"))
         {
             try
             {
@@ -1080,7 +1044,7 @@ $results | Sort-Object TimeCreated -Descending | ForEach-Object {{
         }
 
         // ── RustDesk2.toml ([options] section, RustDesk 1.2+) ──────────
-        foreach (var path in RustDesk2TomlPaths)
+        foreach (var path in GetRustDeskTomlPaths("RustDesk2.toml"))
         {
             try
             {
@@ -1140,14 +1104,14 @@ $results | Sort-Object TimeCreated -Descending | ForEach-Object {{
                 .Where(e => e.TimeGenerated >= cutoff
                     && e.EntryType == System.Diagnostics.EventLogEntryType.Error
                     && (e.Source.Contains("HackIT", StringComparison.OrdinalIgnoreCase)
-                        || e.Source.Contains("HackITSentry", StringComparison.OrdinalIgnoreCase)))
+                        || e.Source.Contains("HITSight", StringComparison.OrdinalIgnoreCase)))
                 .OrderByDescending(e => e.TimeGenerated)
                 .Take(50)
                 .Select(e => new
                 {
                     time = e.TimeGenerated.ToString("yyyy-MM-ddTHH:mm:ss"),
                     source = e.Source,
-                    message = e.Message.Split('\n')[0].Trim()
+                    message = e.Message.Trim()
                 })
                 .ToList();
             return JsonSerializer.Serialize(entries);

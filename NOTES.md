@@ -10,7 +10,7 @@
 
 2. **Token bereits verbraucht** — Token wurde beim ersten (fehlgeschlagenen) Download als `Used=true` markiert. Das Backend gibt dann eine styled HTML-Fehlerseite zurück ("Link bereits verwendet"). Lösung: Neuen Token erstellen.
 
-3. **InstallerService.IsAvailable = false** — Binary nicht gefunden unter `AppContext.BaseDirectory/installer/HackITSentry-Setup.exe`. Backend gibt 503 zurück.
+3. **InstallerService.IsAvailable = false** — Binary nicht gefunden unter `AppContext.BaseDirectory/installer/HITSight-Setup.exe`. Backend gibt 503 zurück.
 
 4. **`${SERVER_PORT}` nicht ersetzt** — Wenn envsubst nicht greift, schlägt proxy_pass fehl. Testen: In den Frontend-Container exec und `/etc/nginx/conf.d/default.conf` prüfen.
 
@@ -54,7 +54,7 @@ Ersetzt durch `InstallerService` + `PatchedFileStream` (streamt on-the-fly).
 
 ## Offene Punkte
 
-- **SSL:** Domain `sentry.server-netz.de` braucht DNS-A-Record auf die Server-IP, dann certbot ausführen.
+- **SSL:** Domain `hitsight.server-netz.de` braucht DNS-A-Record auf die Server-IP, dann certbot ausführen.
 - **Download gibt HTML zurück:** Siehe oben — vermutlich Frontend-Container nicht neu deployed.
 
 ## Wichtige Dateipfade
@@ -67,7 +67,7 @@ Ersetzt durch `InstallerService` + `PatchedFileStream` (streamt on-the-fly).
 | `server/Program.cs` | DI-Registrierung, DB-Migrations |
 | `frontend/nginx.conf` | nginx-Template für Frontend-Container |
 | `outpost.conf` | nginx-Config für Outpost-Container |
-| `installer/Program.cs` | Definiert Platzhalter-Strings (HACKIT_SERVER_URL: etc.) |
+| `installer/Program.cs` | Definiert Platzhalter-Strings (HITSIGHT_SERVER_URL: etc.) |
 | `.env.example` | Dokumentation aller Env-Variablen |
 
 ## Portainer Stack Env (benötigte Werte)

@@ -1,7 +1,7 @@
-# HackIT Sentry — Multi-Tenant SaaS: Implementierungsauftrag
+# HackIT Sight — Multi-Tenant SaaS: Implementierungsauftrag
 
 Du bist ein Orchestrating Senior Software Architect und leitest ein spezialisiertes Multi-Agent-Team.
-Deine Aufgabe ist die vollständige, produktionsreife Implementierung eines Multi-Tenant-SaaS-Systems auf Basis des bestehenden HackIT Sentry Projekts.
+Deine Aufgabe ist die vollständige, produktionsreife Implementierung eines Multi-Tenant-SaaS-Systems auf Basis des bestehenden HackIT Sight Projekts.
 
 **Fang sofort an. Stelle keine Fragen. Triff bei Unklarheiten vernünftige Annahmen und dokumentiere sie.**
 
@@ -35,7 +35,7 @@ Danach liste kurz auf was du verstanden hast (Architektur, DB-Migrations-Ansatz,
 
 ## Was dieses Projekt ist
 
-HackIT Sentry ist eine Device-Management-Plattform für IT-Dienstleister. Ein Windows-Agent läuft auf Kunden-PCs und meldet sich regelmäßig beim Server. Admins sehen alle Geräte, können Software-Inventar einsehen, Befehle senden, Windows/Office-Lizenzschlüssel abrufen und Alerts konfigurieren.
+HackIT Sight ist eine Device-Management-Plattform für IT-Dienstleister. Ein Windows-Agent läuft auf Kunden-PCs und meldet sich regelmäßig beim Server. Admins sehen alle Geräte, können Software-Inventar einsehen, Befehle senden, Windows/Office-Lizenzschlüssel abrufen und Alerts konfigurieren.
 
 **Aktueller Zustand:** Single-Tenant. Eine Installation = eine Firma. Keine Mandantentrennung.
 
@@ -74,10 +74,10 @@ Jeder Tenant bekommt eine eigene PostgreSQL-Datenbank auf demselben Server:
 
 ```
 PostgreSQL-Server
-├── sentry_platform          ← nur Routing-Metadaten (Tenant-Registry)
-├── sentry_muster_gmbh       ← alle Daten von Tenant "muster-gmbh"
-├── sentry_mueller_it        ← alle Daten von Tenant "mueller-it"
-└── sentry_beispiel_ag       ← alle Daten von Tenant "beispiel-ag"
+├── hitsight_platform          ← nur Routing-Metadaten (Tenant-Registry)
+├── hitsight_muster_gmbh       ← alle Daten von Tenant "muster-gmbh"
+├── hitsight_mueller_it        ← alle Daten von Tenant "mueller-it"
+└── hitsight_beispiel_ag       ← alle Daten von Tenant "beispiel-ag"
 ```
 
 Eine neue `PlatformDbContext` enthält nur die `Tenants`-Tabelle. Der bestehende `AppDbContext` bleibt strukturell unverändert, wird aber als `Scoped` mit dynamischer Connection-String registriert.
@@ -352,7 +352,7 @@ Alle E-Mails auf Deutsch. Muster von `AlertEmailService` übernehmen oder `Tenan
 
 ### 3.1 Welcome-E-Mail (nach Provisionierung)
 
-Betreff: `Willkommen bei HackIT Sentry — Ihre Zugangsdaten`
+Betreff: `Willkommen bei HackIT Sight — Ihre Zugangsdaten`
 
 Inhalt:
 - Login-URL: `https://{slug}.{PLATFORM_DOMAIN}/login`
@@ -404,12 +404,12 @@ TOTP-Setup: First-Login-Flow mit QR-Code, Bestätigung vor Aktivierung.
 Seiten:
 
 **Dashboard**
-- Gesamt-Tenants (aktiv / Trial / deaktiviert)
+- Gesamt-Tenants (aktiv / Trial / deaktiviert / gratis)
 - Gesamt-Geräte über alle Tenants
 - Neuanmeldungen (letzte 7 Tage)
 
 **Tenant-Liste**
-- Name, Slug, Paket, Geräte vs. Limit, Status, Subscription-Status, Erstellt-am, Aktionen
+- Name, Slug, Paket (inkl. Badge "Gratis" für plan="free"), Geräte vs. Limit, Status, Subscription-Status, Erstellt-am, Aktionen
 - Filter nach Paket, Status; Suche nach Name/Slug
 
 **Tenant-Detail**
@@ -418,7 +418,8 @@ Seiten:
 - Trial verlängern (setzt neues `TrialEndsAt`)
 - Manuell deaktivieren / reaktivieren
 - Manuelle Löschung (mit Bestätigungs-Dialog)
-- Stripe-Dashboard-Deeplink: `https://dashboard.stripe.com/customers/{StripeCustomerId}`
+- Stripe-Dashboard-Deeplink: `https://dashboard.stripe.com/customers/{StripeCustomerId}` (ausgeblendet bei Gratis-Tenants)
+- **Abschnitt "Gutschriften & Verlängerungen"** (siehe 4.4)
 
 **Platform-Einstellungen**
 - SMTP-Konfiguration
@@ -428,8 +429,90 @@ Seiten:
 
 **Tenant manuell anlegen**
 - Für Kunden die nicht über Stripe-Checkout gehen (Rechnungskunden, interne Tests)
-- Formular: Firmenname, E-Mail, Paket, Trial-Tage
+- Formular: Firmenname, E-Mail, Paket (inkl. Option "Gratis"), Trial-Tage (ausgeblendet bei Gratis)
 - Ruft `TenantProvisioningService` direkt auf
+
+### 4.3 Gratis-Lizenzen
+
+Plan-Wert `"free"` ist dauerhaft aktiv ohne Stripe-Anbindung:
+
+- `MaxDevices = int.MaxValue` (unbegrenzte Geräte)
+- `SubscriptionStatus = "free"`, kein `CurrentPeriodEndsAt`, kein `TrialEndsAt`
+- Tenant-Middleware lässt `IsActive = true` dauerhaft gelten
+- **Cleanup-Job überspringt** Gratis-Tenants (keine automatische Löschung)
+- Stripe-Felder bleiben leer — kein Checkout-Flow nötig
+- Nutzbar für: eigene Instanz, Partner, langfristige Testkunden
+
+Backend: `TenantProvisioningService.ProvisionAsync(plan: "free", maxDevices: int.MaxValue, trialDays: 0)`
+
+### 4.4 Gutschriften & Verlängerungen
+
+**Datenmodell** (Platform-DB):
+
+```csharp
+public class TenantExtension {
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public int Days { get; set; }
+    public string? Reason { get; set; }          // optionaler Admin-Text
+    public bool NotifyToast { get; set; }
+    public bool NotifyEmail { get; set; }
+    public string CreatedBy { get; set; } = "";
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+```
+
+DDL als idempotenter Raw-SQL-Block in Platform-DB-Startup.
+
+**Endpunkt:** `POST /platform/admin/tenants/{id}/extend`
+
+```json
+{
+  "days": 30,
+  "reason": "Treuebonus Q4 2026 – vielen Dank!",
+  "notifyToast": true,
+  "notifyEmail": false
+}
+```
+
+Logik:
+1. `CurrentPeriodEndsAt` (oder `TrialEndsAt` falls noch in Trial) um `days` verlängern
+2. `TenantExtension`-Record in Platform-DB speichern
+3. Falls `notifyToast = true`: `reason` (oder Standardtext wenn leer) in Tenant-AppSettings schreiben (`key = "Platform:LoginMessage"`)
+4. Falls `notifyEmail = true`: E-Mail an `tenant.AdminEmail` mit Verlängerungs-Info + Begründung
+
+**Admin-Panel UI (Abschnitt im Tenant-Detail):**
+- Tabelle mit allen bisherigen Gutschriften: Datum, Tage, Begründung, Benachrichtigungen, erstellt von
+- Button "Neue Gutschrift / Verlängerung" → Modal:
+  - Pflichtfeld: Anzahl Tage (Zahlenfeld)
+  - Optional: Begründung (Textarea, Freitext)
+  - Checkboxen: "Als Toast bei nächster Anmeldung anzeigen" / "Per E-Mail benachrichtigen"
+
+**Toast-Mechanismus (Tenant-Seite):**
+- `GET /api/auth/login-response` (oder in Login-Antwort integriert): gibt `loginMessage?: string` zurück wenn `Platform:LoginMessage` in AppSettings gesetzt
+- Nach Anzeige des Toasts: `DELETE /api/auth/login-message` löscht den AppSettings-Eintrag
+- Toast zeigt den `reason`-Text des Admins direkt an
+
+### 4.5 Onboarding-Tutorial (Erst-Login)
+
+Neue Kunden sehen beim ersten Login eine geführte Tour durch die wichtigsten Funktionen der Tenant-UI.
+
+**Erkennung:**
+- AppSettings-Eintrag `Platform:OnboardingDone = false` → wird bei Tenant-Provisionierung gesetzt
+- Nach Abschluss: `PUT /api/onboarding/complete` setzt `Platform:OnboardingDone = true`
+
+**Tour-Schritte (Overlay-Stil, mit Schritt-Indikator):**
+1. **Willkommen** — Produkt vorstellen, Trial-Info anzeigen
+2. **Erster Agent installieren** — Hinweis auf Deploy-Key + MSI-Link, Button "Link kopieren"
+3. **Gerät freigeben** — kurze Erklärung der Pending-Seite
+4. **Dashboard** — Überblick über Gerätestatus-Kacheln
+5. **Fertig** — Support-Hinweis (E-Mail + osTicket-Link)
+
+**Technisch:**
+- React-Overlay-Komponente `OnboardingTour.tsx` (kein externes Paket, selbst gebaut)
+- `useOnboarding()` Hook prüft bei App-Start ob Tour gezeigt werden soll
+- Tour kann jederzeit übersprungen werden (Button "Tour überspringen" → markiert als done)
+- Tour-Status wird im Backend gespeichert (nicht nur localStorage), damit sie auf neuen Geräten desselben Tenants nicht erneut erscheint
 
 ---
 
@@ -441,7 +524,7 @@ Deutsche Landing Page auf der Root-Domain `{PLATFORM_DOMAIN}`.
 
 **Sections:**
 
-**Hero:** Produktname HackIT Sentry, Fokus auf IT-Dienstleister und Mittelstand, CTA "Jetzt kostenlos testen"
+**Hero:** Produktname HackIT Sight, Fokus auf IT-Dienstleister und Mittelstand, CTA "Jetzt kostenlos testen"
 
 **Features:** Gerätemonitoring, Software-Inventar, Fernbefehle, Patch-Management, Lizenzverwaltung, Alerts
 
@@ -452,7 +535,7 @@ Deutsche Landing Page auf der Root-Domain `{PLATFORM_DOMAIN}`.
 - "Jetzt starten"-Button öffnet Checkout-Flow
 
 **Checkout-Flow (inline):**
-- Firmenname-Eingabe mit Live-Slug-Vorschau: "Ihr Zugang wird: muster-gmbh.hackit-sentry.de"
+- Firmenname-Eingabe mit Live-Slug-Vorschau: "Ihr Zugang wird: muster-gmbh.hitsight.de"
 - E-Mail-Eingabe
 - Submit ruft `POST /api/checkout/session` auf → Weiterleitung zu Stripe Checkout
 - Nach Stripe: Weiterleitung zu `https://{slug}.{PLATFORM_DOMAIN}/login?welcome=1`
@@ -521,8 +604,8 @@ OUTPOST_PUBLIC_URL
 EMAIL_HOST / EMAIL_PORT / EMAIL_USERNAME / EMAIL_PASSWORD / EMAIL_FROM / EMAIL_TO
 
 # Neu — Platform
-PLATFORM_CONNECTION_STRING     ← Connection-String für Platform-DB (sentry_platform)
-PLATFORM_DOMAIN                ← z.B. hackit-sentry.de
+PLATFORM_CONNECTION_STRING     ← Connection-String für Platform-DB (hitsight_platform)
+PLATFORM_DOMAIN                ← z.B. hitsight.de
 PLATFORM_JWT_KEY               ← separater Signing-Key für SuperAdmin-JWTs (min. 32 Zeichen)
 ADMIN_SUBDOMAIN                ← z.B. admin
 
@@ -568,6 +651,11 @@ Vor dem Abschluss jeder Phase prüft der QA Engineer:
 - SuperAdmin-JWT von Tenant-API-Endpunkten abgelehnt (401/403)
 - Subdomain-Umbenennung wirkt sofort (Cache invalidiert)
 - Manuelle Tenant-Anlage ohne Stripe funktioniert
+- Gratis-Tenant anlegen: plan="free", unbegrenzte Geräte, kein Ablauf, kein Cleanup
+- Verlängerung: `CurrentPeriodEndsAt` korrekt verlängert, History-Eintrag vorhanden
+- Toast: erscheint beim nächsten Login, wird nach Anzeige gelöscht (AppSettings-Key weg)
+- Verlängerungs-E-Mail kommt beim Tenant-Admin an
+- Onboarding-Tour erscheint beim ersten Login neuer Tenants, nicht erneut nach Abschluss
 
 **Phase 5:**
 - Preise werden dynamisch geladen (Änderung in Platform-Config aktualisiert die Seite)

@@ -1,6 +1,9 @@
 using Novell.Directory.Ldap;
+using System.Security.Cryptography.X509Certificates;
+using System.Net.Security;
+using System.Text;
 
-namespace HackITSentry.Server.Services;
+namespace HITSight.Server.Services;
 
 public class LdapUserInfo
 {
@@ -158,10 +161,37 @@ public class LdapService
         var conn = new LdapConnection();
         var transport = _settings.LdapTransport; // "TCP" | "STARTTLS" | "LDAPS"
 
-        if (_settings.LdapIgnoreCertificateErrors && transport != "TCP")
+        if (transport != "TCP")
         {
-            _logger.LogWarning("LDAP: Zertifikatsfehler werden ignoriert (IgnoreCertificateErrors=true). Nur für selbstsignierte Certs in Testumgebungen verwenden.");
-            conn.UserDefinedServerCertValidationDelegate += (_, _, _, _) => true;
+            if (!string.IsNullOrEmpty(_settings.LdapCaCertificate))
+            {
+                // Validate server cert against the uploaded CA certificate
+                X509Certificate2 caCert;
+                try
+                {
+                    caCert = new X509Certificate2(Encoding.UTF8.GetBytes(_settings.LdapCaCertificate));
+                }
+                catch (Exception ex)
+                {
+                    throw new InvalidOperationException("Das gespeicherte CA-Zertifikat ist ungültig.", ex);
+                }
+
+                conn.UserDefinedServerCertValidationDelegate += (_, serverCert, chain, sslPolicyErrors) =>
+                {
+                    if (sslPolicyErrors == SslPolicyErrors.None) return true;
+                    // Only tolerate chain errors (unknown root) — not name mismatches
+                    if ((sslPolicyErrors & ~SslPolicyErrors.RemoteCertificateChainErrors) != 0) return false;
+                    chain!.ChainPolicy.ExtraStore.Add(caCert);
+                    chain.ChainPolicy.VerificationFlags = X509VerificationFlags.AllowUnknownCertificateAuthority;
+                    chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+                    return chain.Build(new X509Certificate2(serverCert!));
+                };
+            }
+            else if (_settings.LdapIgnoreCertificateErrors)
+            {
+                _logger.LogWarning("LDAP: Zertifikatsfehler werden ignoriert (kein CA-Zertifikat hinterlegt).");
+                conn.UserDefinedServerCertValidationDelegate += (_, _, _, _) => true;
+            }
         }
 
         if (transport == "LDAPS")

@@ -1,11 +1,11 @@
-using HackITSentry.Server.Data;
-using HackITSentry.Server.Services;
+using HITSight.Server.Data;
+using HITSight.Server.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using System.Security.Claims;
 
-namespace HackITSentry.Server.Controllers;
+namespace HITSight.Server.Controllers;
 
 [ApiController]
 [Route("api/auth")]
@@ -44,7 +44,7 @@ public class AuthController : ControllerBase
         if (string.IsNullOrWhiteSpace(request.Password) || request.Password.Length < 6)
             return BadRequest(new { message = "Passwort muss mindestens 6 Zeichen lang sein" });
 
-        var user = new HackITSentry.Server.Models.User
+        var user = new HITSight.Server.Models.User
         {
             Username = request.Username,
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(request.Password),
@@ -101,7 +101,7 @@ public class AuthController : ControllerBase
             var ldapUser = _db.Users.FirstOrDefault(u => u.Username == request.Username && !u.IsLocal);
             if (ldapUser == null)
             {
-                ldapUser = new HackITSentry.Server.Models.User
+                ldapUser = new HITSight.Server.Models.User
                 {
                     Username = request.Username,
                     PasswordHash = "",

@@ -2,7 +2,7 @@ using Microsoft.Extensions.Options;
 using System.Net.Http.Json;
 using System.Text.Json;
 
-namespace HackITSentry.Agent;
+namespace HITSight.Agent;
 
 public class AgentHttpClient
 {
@@ -22,7 +22,7 @@ public class AgentHttpClient
 
     private HttpClient CreateClient()
     {
-        var client = _factory.CreateClient("SentryServer");
+        var client = _factory.CreateClient("HITSightServer");
         var apiKey = SecureStore.LoadApiKey();
         if (!string.IsNullOrEmpty(apiKey))
         {
@@ -36,7 +36,7 @@ public class AgentHttpClient
     {
         try
         {
-            var client = _factory.CreateClient("SentryServer");
+            var client = _factory.CreateClient("HITSightServer");
             var response = await client.PostAsJsonAsync("api/agent/register", payload);
             response.EnsureSuccessStatusCode();
             return await response.Content.ReadFromJsonAsync<RegisterResponse>();
@@ -52,7 +52,7 @@ public class AgentHttpClient
     {
         try
         {
-            var client = _factory.CreateClient("SentryServer");
+            var client = _factory.CreateClient("HITSightServer");
             var response = await client.GetAsync($"api/agent/register/{token}/status");
             if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
                 return new RegistrationStatusResponse("NotFound", null);
@@ -158,7 +158,7 @@ public class AgentHttpClient
     {
         try
         {
-            var client = _factory.CreateClient("SentryServerLongPoll");
+            var client = _factory.CreateClient("HITSightServerLongPoll");
             var apiKey = SecureStore.LoadApiKey();
             if (!string.IsNullOrEmpty(apiKey))
             {

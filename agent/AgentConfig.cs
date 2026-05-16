@@ -1,4 +1,4 @@
-namespace HackITSentry.Agent;
+namespace HITSight.Agent;
 
 public class AgentConfig
 {

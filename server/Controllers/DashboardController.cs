@@ -1,11 +1,11 @@
-using HackITSentry.Server.Data;
-using HackITSentry.Server.Models;
-using HackITSentry.Server.Services;
+using HITSight.Server.Data;
+using HITSight.Server.Models;
+using HITSight.Server.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
-namespace HackITSentry.Server.Controllers;
+namespace HITSight.Server.Controllers;
 
 [ApiController]
 [Route("api/dashboard")]
@@ -104,6 +104,23 @@ public class DashboardController : ControllerBase
             .Where(c => c.Status == CommandStatus.Pending || c.Status == CommandStatus.Sent)
             .CountAsync();
 
+        var pendingCommandsList = await _db.DeviceCommands
+            .Where(c => c.Status == CommandStatus.Pending || c.Status == CommandStatus.Sent)
+            .Include(c => c.Device)
+            .OrderBy(c => c.CreatedAt)
+            .Take(50)
+            .Select(c => new
+            {
+                c.Id,
+                DeviceId = c.DeviceId,
+                DeviceHostname = c.Device.Hostname,
+                CommandType = c.CommandType.ToString(),
+                Status = c.Status.ToString(),
+                c.IssuedByUsername,
+                c.CreatedAt
+            })
+            .ToListAsync();
+
         var devicesWithUpdates = await _db.Devices
             .CountAsync(d => d.PendingUpdatesCount > 0);
 
@@ -129,7 +146,8 @@ public class DashboardController : ControllerBase
             recentAlerts,
             recentAuditLogs,
             devicesByGroup,
-            devicesByCustomer
+            devicesByCustomer,
+            pendingCommandsList
         });
     }
 }

@@ -2,7 +2,7 @@ using System.Management;
 using System.Runtime.Versioning;
 using Microsoft.Win32;
 
-namespace HackITSentry.Agent;
+namespace HITSight.Agent;
 
 [SupportedOSPlatform("windows")]
 public class LicenseCollector

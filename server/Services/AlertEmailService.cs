@@ -2,7 +2,7 @@ using MailKit.Net.Smtp;
 using MailKit.Security;
 using MimeKit;
 
-namespace HackITSentry.Server.Services;
+namespace HITSight.Server.Services;
 
 public class AlertEmailService
 {
@@ -14,6 +14,10 @@ public class AlertEmailService
         _settings = settings;
         _logger = logger;
     }
+
+    // Used by background services that already have a RuntimeSettings instance from scope
+    internal static AlertEmailService FromSettings(RuntimeSettings settings, ILogger<AlertEmailService> logger)
+        => new(settings, logger);
 
     public async Task<string?> SendAsync(string subject, string htmlBody)
     {
@@ -103,7 +107,7 @@ public class AlertEmailService
             <body style="margin:0;padding:24px 16px;background:#f4f4f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">
               <div style="max-width:580px;margin:0 auto;">
                 <div style="background:#18181b;border-radius:8px 8px 0 0;padding:20px 28px;">
-                  <span style="font-size:13px;font-weight:600;color:#a1a1aa;letter-spacing:.05em;text-transform:uppercase;">HackIT Sentry</span>
+                  <span style="font-size:13px;font-weight:600;color:#a1a1aa;letter-spacing:.05em;text-transform:uppercase;">HITSight</span>
                 </div>
                 <div style="background:#ffffff;border:1px solid #e4e4e7;border-top:none;border-radius:0 0 8px 8px;padding:28px;">
                   <span style="display:inline-block;padding:4px 12px;border-radius:99px;font-size:12px;font-weight:600;background:{color}1a;color:{color};margin-bottom:16px;">{badge}</span>
@@ -112,7 +116,7 @@ public class AlertEmailService
                   {footer}
                 </div>
                 <p style="margin:16px 0 0;text-align:center;font-size:11px;color:#a1a1aa;">
-                  HackIT Sentry &middot; {DateTime.UtcNow:dd.MM.yyyy HH:mm} UTC
+                  HITSight &middot; {DateTime.UtcNow:dd.MM.yyyy HH:mm} UTC
                 </p>
               </div>
             </body>

@@ -1,30 +1,45 @@
 using Microsoft.Win32;
 using System.Runtime.Versioning;
 
-namespace HackITSentry.Agent;
+namespace HITSight.Agent;
 
 [SupportedOSPlatform("windows")]
 public static class RegistryConfig
 {
-    private const string Key = @"SOFTWARE\HackIT Sentry";
+    private const string Key = @"SOFTWARE\HITSight";
 
-    public static string? GetServerUrl()
+    // Legacy keys from previous branding — read for migration only.
+    private static readonly string[] LegacyKeys =
+    [
+        @"SOFTWARE\HITGuard",
+        @"SOFTWARE\HackITSentry",
+    ];
+
+    public static string? GetServerUrl() => GetValue("ServerUrl");
+    public static string? GetDeployKey() => GetValue("DeployKey");
+
+    private static string? GetValue(string valueName)
     {
+        // Try current key first.
         try
         {
             using var k = Registry.LocalMachine.OpenSubKey(Key);
-            return k?.GetValue("ServerUrl") as string is { Length: > 0 } v ? v : null;
+            if (k?.GetValue(valueName) is string v && v.Length > 0)
+                return v;
         }
-        catch { return null; }
-    }
+        catch { }
 
-    public static string? GetDeployKey()
-    {
-        try
+        // Migrate from legacy key if present.
+        foreach (var legacy in LegacyKeys)
         {
-            using var k = Registry.LocalMachine.OpenSubKey(Key);
-            return k?.GetValue("DeployKey") as string is { Length: > 0 } v ? v : null;
+            try
+            {
+                using var k = Registry.LocalMachine.OpenSubKey(legacy);
+                if (k?.GetValue(valueName) is string v && v.Length > 0)
+                    return v;
+            }
+            catch { }
         }
-        catch { return null; }
+        return null;
     }
 }

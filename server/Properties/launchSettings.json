@@ -1,6 +1,6 @@
 {
   "profiles": {
-    "HackITSentry.Server": {
+    "HITSight.Server": {
       "commandName": "Project",
       "dotnetRunMessages": true,
       "launchBrowser": false,

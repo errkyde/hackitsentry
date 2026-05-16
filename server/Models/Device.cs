@@ -1,4 +1,4 @@
-namespace HackITSentry.Server.Models;
+namespace HITSight.Server.Models;
 
 public class Device
 {
