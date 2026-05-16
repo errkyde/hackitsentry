@@ -615,6 +615,23 @@ CLOUDFLARE_TUNNEL_TOKEN    ← Token aus Cloudflare Zero Trust Dashboard
 - `*.hitsight.de` → `http://proxy:80`
 - `admin.hitsight.de` → `http://proxy:80` (nginx unterscheidet intern)
 
+### 6.1a Dev-Umgebung: kacke.best
+
+Die Domain `kacke.best` läuft ebenfalls über Cloudflare Tunnel und zeigt auf die **Dev-Branch-Instanz** des Stacks. Identische Konfiguration, separater Compose-Stack mit eigenen Volumes und eigenem Tunnel-Token.
+
+**Env-Variablen der Dev-Instanz:**
+```
+PLATFORM_DOMAIN=kacke.best
+CLOUDFLARE_TUNNEL_TOKEN=<dev-tunnel-token>   ← separater Tunnel im CF Dashboard
+```
+
+**Tunnel-Routing (separater Tunnel "hitsight-dev"):**
+- `kacke.best` → `http://proxy:80`
+- `*.kacke.best` → `http://proxy:80`
+- `admin.kacke.best` → `http://proxy:80`
+
+Dev- und Prod-Stack laufen isoliert auf demselben Host (unterschiedliche Compose-Projektnamen, unterschiedliche Ports intern, aber beide ohne offene Ports nach außen). Stripe-Keys in Dev zeigen auf Stripe Test-Mode.
+
 ### 6.2 nginx — Wildcard-Subdomain-Routing
 
 `proxy.conf` aktualisieren (nginx empfängt alle Requests vom Tunnel intern):
