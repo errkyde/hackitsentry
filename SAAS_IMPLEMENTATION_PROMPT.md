@@ -580,28 +580,59 @@ Deutsche Landing Page auf der Root-Domain `{PLATFORM_DOMAIN}`.
 
 *Assigned to: DevOps Engineer. Review by: Code Reviewer.*
 
-### 6.1 nginx — Wildcard-Subdomain-Routing
+### 6.1 Cloudflare Tunnel (primärer Ingress)
 
-`nginx-proxy.conf` aktualisieren:
+Die Domain `hitsight.de` läuft über einen **Cloudflare Tunnel** (`cloudflared`). Das ersetzt den offenen Port 80/443 vollständig:
+
+- Kein `ports:`-Mapping im `proxy`-Service nötig — der Tunnel verbindet von innen nach außen
+- Cloudflare stellt TLS für `hitsight.de` **und** `*.hitsight.de` automatisch bereit — kein manuelles Wildcard-Zertifikat
+- DDoS-Schutz und WAF liegen automatisch davor
+
+**`docker-compose.yml` — Cloudflare Tunnel ergänzen:**
+
+```yaml
+cloudflared:
+  image: cloudflare/cloudflared:latest
+  restart: unless-stopped
+  command: tunnel --no-autoupdate run
+  environment:
+    TUNNEL_TOKEN: "${CLOUDFLARE_TUNNEL_TOKEN}"
+  depends_on:
+    - proxy
+```
+
+**Neue Env-Variable:**
+```
+CLOUDFLARE_TUNNEL_TOKEN    ← Token aus Cloudflare Zero Trust Dashboard
+```
+
+**Cloudflare DNS (einmalig im Dashboard konfigurieren):**
+- `hitsight.de` → Tunnel
+- `*.hitsight.de` → Tunnel (Wildcard deckt alle Tenant-Subdomains ab)
+
+**Tunnel-Routing (im Cloudflare Dashboard unter "Public Hostnames"):**
+- `hitsight.de` → `http://proxy:80`
+- `*.hitsight.de` → `http://proxy:80`
+- `admin.hitsight.de` → `http://proxy:80` (nginx unterscheidet intern)
+
+### 6.2 nginx — Wildcard-Subdomain-Routing
+
+`proxy.conf` aktualisieren (nginx empfängt alle Requests vom Tunnel intern):
 - `admin.{domain}` → Admin-Panel-App
 - `*.{domain}` → Haupt-App (Tenant-Routing in ASP.NET Core Middleware)
 - Root `{domain}` → Landing Page
 
-### 6.2 Docker Compose
+Da Cloudflare TLS terminiert, läuft nginx intern auf HTTP — kein SSL-Zertifikat im Container nötig.
+
+### 6.3 Docker Compose
 
 `docker-compose.yml` aktualisieren:
 - `Platform:ConnectionString` für Platform-DB
 - Alle Stripe-Env-Variablen
+- `CLOUDFLARE_TUNNEL_TOKEN` ergänzen
 - PostgreSQL-Container: App-User erhält `CREATEDB`-Recht
 - Neue Variablen: `PLATFORM_DOMAIN`, `PLATFORM_JWT_KEY`
-
-### 6.3 Wildcard-SSL
-
-In `README.md` dokumentieren:
-```bash
-certbot certonly --dns-{provider} -d "{domain}" -d "*.{domain}"
-```
-Wildcard-Zertifikat deckt alle Tenant-Subdomains automatisch ab.
+- `proxy`-Service: `ports:`-Mapping entfernen (kein direkter Internet-Zugang mehr)
 
 ---
 
@@ -760,8 +791,9 @@ Vor dem Abschluss jeder Phase prüft der QA Engineer:
 - Datenschutzerklärung, Impressum und AVV-PDF auf Landing Page erreichbar
 
 **Phase 6:**
-- `*.{domain}` Subdomains werden nach nginx-Neustart korrekt aufgelöst
-- SSL-Zertifikat deckt Wildcard ab (Prüfung mit `curl -I https://test.{domain}`)
+- Cloudflare Tunnel aktiv: `hitsight.de` und `*.hitsight.de` erreichbar ohne offene Ports
+- Tenant-Subdomain (z.B. `test-tenant.hitsight.de`) korrekt aufgelöst und von nginx an ASP.NET weitergeleitet
+- TLS wird von Cloudflare gestellt — kein Zertifikat im Container nötig
 - Neue Tenant-DB wird mit korrekten PostgreSQL-Benutzerrechten angelegt
 
 ---
