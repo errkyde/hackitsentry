@@ -214,7 +214,7 @@ public class SightAgent : BackgroundService
                 if (status.Status == "Rejected")
                 {
                     _logger.LogWarning("Registration was rejected by admin. Uninstalling agent...");
-                    _ = Task.Run(() => UninstallSelf(notifyServer: false));
+                    UninstallSelf(notifyServer: false);
                     return null;
                 }
 
@@ -226,7 +226,7 @@ public class SightAgent : BackgroundService
                 }
             }
 
-            await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
+            await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
         }
 
         return null;
@@ -663,11 +663,13 @@ public class SightAgent : BackgroundService
                 Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
                 "HITSight");
 
-            // Build self-deleting batch script
+            // Build self-deleting batch script.
+            // Uses _lifetime.StopApplication() for a clean SCM stop (no restart),
+            // so the bat only needs to delete the service registration and files.
             var bat = Path.Combine(Path.GetTempPath(), "hitsight_uninstall.bat");
             File.WriteAllText(bat,
                 "@echo off\r\n" +
-                "ping -n 4 127.0.0.1 > nul\r\n" +
+                "ping -n 6 127.0.0.1 > nul\r\n" +
                 "sc stop HITSightAgent > nul 2>&1\r\n" +
                 "ping -n 3 127.0.0.1 > nul\r\n" +
                 "sc delete HITSightAgent > nul 2>&1\r\n" +
@@ -681,7 +683,7 @@ public class SightAgent : BackgroundService
                 UseShellExecute = false
             });
 
-            Environment.Exit(0);
+            _lifetime.StopApplication();
         }
         catch (Exception ex)
         {
