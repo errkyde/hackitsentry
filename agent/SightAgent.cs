@@ -1222,7 +1222,7 @@ public class SightAgent : BackgroundService
         {
             if (WindowsServiceExists("HITSightAgent")) return;
 
-            var legacyName = new[] { "HITGuardAgent", "HackITSentryAgent" }
+            var legacyName = new[] { "HITGuardAgent", "HackITSentryAgent", "SentryAgent" }
                 .FirstOrDefault(WindowsServiceExists);
             if (legacyName == null) return;
 
