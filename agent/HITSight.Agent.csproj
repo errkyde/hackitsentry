@@ -7,8 +7,8 @@
     <RootNamespace>HITSight.Agent</RootNamespace>
     <UserSecretsId>hitsight-agent</UserSecretsId>
     <RuntimeIdentifiers>win-x64;win-x86</RuntimeIdentifiers>
-    <Version>1.0.32</Version>
-    <AssemblyVersion>1.0.32.0</AssemblyVersion>
+    <Version>1.0.33</Version>
+    <AssemblyVersion>1.0.33.0</AssemblyVersion>
   </PropertyGroup>
 
   <ItemGroup>

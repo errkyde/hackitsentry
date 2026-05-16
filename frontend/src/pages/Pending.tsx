@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Clock, Check, X, Cpu, MemoryStick, Monitor, UserPlus, RefreshCw, Package } from "lucide-react";
 import { devices, customers, groups, type PendingDevice, type Customer, type Group } from "@/lib/api";
+import { toast } from "@/lib/useToast";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
@@ -21,6 +22,7 @@ export function Pending() {
   const [selectedCustomer, setSelectedCustomer] = useState("none");
   const [selectedGroup, setSelectedGroup] = useState("none");
   const [approving, setApproving] = useState(false);
+  const [rejectingIds, setRejectingIds] = useState<Set<string>>(new Set());
 
   const fetchAll = async () => {
     const [pending, cust, grp] = await Promise.all([
@@ -59,9 +61,17 @@ export function Pending() {
     await fetchAll();
   };
 
-  const handleReject = async (id: string) => {
-    await devices.reject(id);
-    await fetchAll();
+  const handleReject = async (id: string, hostname: string) => {
+    setRejectingIds(prev => new Set(prev).add(id));
+    try {
+      await devices.reject(id);
+      toast({ title: "Gerät abgelehnt", description: `${hostname} wurde abgelehnt und wird deinstalliert.` });
+      await fetchAll();
+    } catch {
+      toast({ title: "Fehler", description: "Ablehnen fehlgeschlagen. Bitte erneut versuchen.", variant: "warning" });
+    } finally {
+      setRejectingIds(prev => { const s = new Set(prev); s.delete(id); return s; });
+    }
   };
 
   const timeAgo = (dateStr: string) => {
@@ -153,10 +163,11 @@ export function Pending() {
                     size="sm"
                     variant="destructive"
                     className="flex-1"
-                    onClick={() => handleReject(device.id)}
+                    disabled={rejectingIds.has(device.id)}
+                    onClick={() => handleReject(device.id, device.hostname)}
                   >
                     <X className="h-3.5 w-3.5 mr-1" />
-                    Ablehnen
+                    {rejectingIds.has(device.id) ? "Wird abgelehnt…" : "Ablehnen"}
                   </Button>
                 </div>
               </CardContent>

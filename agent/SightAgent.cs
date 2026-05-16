@@ -670,11 +670,17 @@ public class SightAgent : BackgroundService
             File.WriteAllText(bat,
                 "@echo off\r\n" +
                 "ping -n 6 127.0.0.1 > nul\r\n" +
-                "sc stop HITSightAgent > nul 2>&1\r\n" +
+                // Stop + delete all known service names (current + all legacy)
+                "for %%S in (HITSightAgent HITGuardAgent HackITSentryAgent SentryAgent) do (\r\n" +
+                "  sc stop %%S > nul 2>&1\r\n" +
+                "  sc delete %%S > nul 2>&1\r\n" +
+                ")\r\n" +
                 "ping -n 3 127.0.0.1 > nul\r\n" +
-                "sc delete HITSightAgent > nul 2>&1\r\n" +
+                // Remove install dir + all known legacy data dirs
                 $"rd /s /q \"{installDir}\" > nul 2>&1\r\n" +
                 $"rd /s /q \"{dataDir}\" > nul 2>&1\r\n" +
+                "rd /s /q \"C:\\ProgramData\\HITGuard\" > nul 2>&1\r\n" +
+                "rd /s /q \"C:\\ProgramData\\HackITSentry\" > nul 2>&1\r\n" +
                 "del /f /q \"%~f0\"\r\n");
 
             Process.Start(new ProcessStartInfo("cmd.exe", $"/c \"{bat}\"")
