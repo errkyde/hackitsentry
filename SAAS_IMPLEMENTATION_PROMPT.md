@@ -109,6 +109,12 @@ Eine neue `PlatformDbContext` enthält nur die `Tenants`-Tabelle. Der bestehende
 - Account bleibt aktiv bis Ende der bezahlten Periode
 - Danach: Login und Agent-Check-ins geblockt
 - Daten werden 30 Tage aufbewahrt, dann automatisch gelöscht (Background-Job droppt die DB)
+- 7 Tage vor automatischer Löschung: E-Mail-Warnung an Admin-E-Mail des Tenants
+
+**DSGVO / AVV:**
+- AVV-Akzeptanz beim Checkout (Checkbox + Timestamp + IP) — Pflicht nach Art. 28 DSGVO
+- Daten-Export auf Anfrage (Art. 20): alle Gerätedaten als JSON/CSV
+- Datenschutzerklärung + Impressum auf Landing Page
 
 **Stripe Tax:** Aktiviert — Stripe berechnet MwSt automatisch (19% DE)
 
@@ -150,6 +156,11 @@ public class Tenant {
     public DateTime? DeactivatedAt { get; set; }
     public DateTime? ScheduledDeletionAt { get; set; } // = DeactivatedAt + 30 Tage
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+    // DSGVO Art. 28 — AVV-Akzeptanz beim Checkout
+    public DateTime? AvvAcceptedAt { get; set; }
+    public string? AvvAcceptorIp { get; set; }
+    public string AvvVersion { get; set; } = "";        // z.B. "2025-01" — verweist auf PDF-Version
 }
 ```
 
@@ -284,7 +295,8 @@ Erstelle `server/Controllers/CheckoutController.cs` (kein `[Authorize]` — öff
 }
 ```
 
-- Inputs validieren
+- Inputs validieren — **Pflichtfeld: `avvAccepted: true`** (ohne Akzeptanz: 400 zurückgeben)
+- AVV-Akzeptanz mit Timestamp + Client-IP und AVV-Versionsnummer in Metadata mitgeben
 - Slug aus `companyName` generieren, Eindeutigkeit prüfen
 - Stripe Checkout Session erstellen:
   - Mode: `subscription`, Trial: 14 Tage, Payment: card, Tax: automatic
@@ -312,9 +324,9 @@ var stripeEvent = EventUtility.ConstructEvent(json,
 Zu behandelnde Events:
 
 **`checkout.session.completed`**
-- Metadata extrahieren: `companyName`, `plan`, `slug`, `email`, Stripe-Customer/Subscription-IDs
+- Metadata extrahieren: `companyName`, `plan`, `slug`, `email`, Stripe-Customer/Subscription-IDs, AVV-Timestamp/IP/Version
 - `TenantProvisioningService.ProvisionAsync(...)` aufrufen
-- `StripeCustomerId`, `StripeSubscriptionId`, `SubscriptionStatus = "trialing"` in Platform-DB speichern
+- `StripeCustomerId`, `StripeSubscriptionId`, `SubscriptionStatus = "trialing"`, `AvvAcceptedAt`, `AvvAcceptorIp`, `AvvVersion` in Platform-DB speichern
 
 **`customer.subscription.updated`**
 - `SubscriptionStatus`, `CurrentPeriodEndsAt`, `Plan`, `MaxDevices` in Platform-DB aktualisieren
@@ -372,7 +384,19 @@ Gesendet durch Webhook-Handler bei `invoice.payment_failed`.
 
 ### 3.4 Account deaktiviert
 
-Gesendet bei `customer.subscription.deleted`. Informiert über 30-tägige Datenhaltung.
+Gesendet bei `customer.subscription.deleted`. Informiert über 30-tägige Datenhaltung und das genaue Löschdatum (`ScheduledDeletionAt`).
+
+### 3.5 Datenlöschung in 7 Tagen (DSGVO-Pflicht)
+
+Background-Job scannt täglich `ScheduledDeletionAt - 7 Tage`. E-Mail an `tenant.AdminEmail`:
+
+Betreff: `Ihre HITSight-Daten werden am {Datum} gelöscht`
+
+Inhalt:
+- Hinweis auf bevorstehende unwiderrufliche Löschung
+- Daten-Export-Link: `https://{slug}.{PLATFORM_DOMAIN}/api/export/devices` (falls noch aktiv) — **nur wenn Account noch zugänglich**
+- Kontakthinweis falls Reaktivierung gewünscht
+- Rechtlicher Hinweis: Umsetzung von DSGVO Art. 17
 
 ---
 
@@ -537,6 +561,7 @@ Deutsche Landing Page auf der Root-Domain `{PLATFORM_DOMAIN}`.
 **Checkout-Flow (inline):**
 - Firmenname-Eingabe mit Live-Slug-Vorschau: "Ihr Zugang wird: muster-gmbh.hitsight.de"
 - E-Mail-Eingabe
+- Pflicht-Checkbox: „Ich akzeptiere den [Auftragsverarbeitungsvertrag (AVV)](link) gemäß Art. 28 DSGVO" — Submit-Button solange deaktiviert bis Checkbox gesetzt
 - Submit ruft `POST /api/checkout/session` auf → Weiterleitung zu Stripe Checkout
 - Nach Stripe: Weiterleitung zu `https://{slug}.{PLATFORM_DOMAIN}/login?welcome=1`
 
@@ -546,6 +571,8 @@ Deutsche Landing Page auf der Root-Domain `{PLATFORM_DOMAIN}`.
 - "Datenlöschung auf Knopfdruck"
 
 **Support/Kontakt:** E-Mail + osTicket-Link (aus Platform-API geladen)
+
+**Footer:** Impressum · Datenschutzerklärung · [Auftragsverarbeitungsvertrag (PDF)] — alle drei Pflicht, Links zu statischen Seiten/Dateien. Kein Cookie-Banner nötig (kein Tracking, nur Session-JWT).
 
 ---
 
@@ -623,6 +650,65 @@ STRIPE_ENTERPRISE_YEARLY_PRICE_ID
 
 ---
 
+## Phase 8 — DSGVO-Compliance
+
+*Assigned to: DSGVO-Beauftragter + Backend Developer. Review by: Security Auditor + Code Reviewer.*
+
+### 8.1 Daten-Export-Endpunkt (Art. 20 Datenportabilität)
+
+`GET /api/export/devices` — erfordert gültigen Tenant-JWT (Admin-Rolle).
+
+Gibt alle Gerätedaten des Tenants als JSON zurück:
+- Alle `Device`-Records mit Hardware-Specs, Software-Inventar, Netzwerkadaptern, Disk-Daten
+- Keine Lizenzschlüssel im Export (verschlüsselt gespeichert, nur auf explizite Anfrage via UI abrufbar)
+- Content-Type: `application/json`, Dateiname: `hitsight-export-{datum}.json`
+
+Zusätzlich `GET /api/export/devices.csv` — gleicher Scope, flaches CSV-Format (eine Zeile pro Gerät, ohne Software-Details).
+
+Beide Endpunkte mit Rate-Limiter (max. 5 Requests/Stunde pro Tenant).
+
+### 8.2 AVV-Dokumentation im Admin-Panel
+
+Im Admin-Panel unter Tenant-Detail: neuer Abschnitt **"DSGVO / AVV"**:
+- AVV akzeptiert am: `{AvvAcceptedAt:dd.MM.yyyy HH:mm}` UTC
+- Akzeptiert von IP: `{AvvAcceptorIp}`
+- AVV-Version: `{AvvVersion}`
+- Schaltfläche: „AVV-Dokument anzeigen (PDF)" → statischer Link zur entsprechenden PDF-Version
+
+Diese Daten sind unveränderlich (kein Edit-Button) — Nachweis gegenüber Aufsichtsbehörden.
+
+### 8.3 Löschprotokoll
+
+`TenantCleanupService` (Phase 2.4) schreibt vor dem DB-Drop einen Eintrag in eine Plattform-Tabelle `DeletionLog`:
+
+```csharp
+public class DeletionLog {
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public string TenantSlug { get; set; } = "";
+    public string TenantName { get; set; } = "";
+    public string AdminEmail { get; set; } = "";       // anonymisiert nach Speicherung: hash only
+    public string DbName { get; set; } = "";
+    public DateTime ScheduledDeletionAt { get; set; }
+    public DateTime DeletedAt { get; set; } = DateTime.UtcNow;
+    public string Reason { get; set; } = "";           // "subscription_canceled" | "manual_admin"
+}
+```
+
+Dieser Log bleibt in der Platform-DB erhalten (kein Tenant-Daten, nur Metadaten) — nachweislich für interne Buchführung und eventuelle Behördenanfragen. E-Mail-Adresse wird nach dem Löschen gehasht (SHA-256), kein Klartext mehr.
+
+### 8.4 Verzeichnis der Verarbeitungstätigkeiten (intern, kein Code)
+
+Im Admin-Panel: statische Seite **"Datenschutz-Dokumentation"** mit:
+- Welche Daten gesammelt werden (Gerätedaten, keine personenbezogenen Enddaten)
+- Zweck (IT-Asset-Management für den jeweiligen Tenant)
+- Speicherdauer (Laufzeit des Abonnements + 30 Tage)
+- Sub-Auftragsverarbeiter: Stripe (Zahlungsabwicklung), SMTP-Provider (E-Mail)
+- Technische Maßnahmen (Verschlüsselung, Datenbankisolation, HTTPS)
+
+Diese Seite ist statischer HTML-Content — kein Datenbankaufruf nötig.
+
+---
+
 ## Quality Gates
 
 Vor dem Abschluss jeder Phase prüft der QA Engineer:
@@ -663,6 +749,16 @@ Vor dem Abschluss jeder Phase prüft der QA Engineer:
 - Stripe-Checkout-Weiterleitung für alle Pakete funktioniert
 - Welcome-Banner bei `?welcome=1` korrekt
 
+**Phase 8:**
+- AVV-Checkbox blockiert Checkout-Submit wenn nicht gesetzt (Frontend + Backend)
+- Backend lehnt `POST /api/checkout/session` ohne `avvAccepted: true` mit 400 ab
+- AVV-Timestamp/IP korrekt in Platform-DB gespeichert (verifiziert durch Admin-Panel)
+- `/api/export/devices` liefert vollständige Daten, keine Lizenzschlüssel im Klartext
+- Rate-Limit auf Export greift nach 5 Requests
+- Löschprotokoll enthält nach Tenant-Löschung korrekten `DeletionLog`-Eintrag mit gehashter E-Mail
+- 7-Tage-Vorwarn-E-Mail enthält korrektes Löschdatum
+- Datenschutzerklärung, Impressum und AVV-PDF auf Landing Page erreichbar
+
 **Phase 6:**
 - `*.{domain}` Subdomains werden nach nginx-Neustart korrekt aufgelöst
 - SSL-Zertifikat deckt Wildcard ab (Prüfung mit `curl -I https://test.{domain}`)
@@ -672,14 +768,35 @@ Vor dem Abschluss jeder Phase prüft der QA Engineer:
 
 ## DSGVO-Checkliste
 
+**Datenisolation:**
 - [ ] Jede Tenant-DB ist physisch isoliert — verifiziert durch Schema-Inspektion
 - [ ] Platform-DB enthält ausschließlich Routing-Metadaten
 - [ ] Lizenzschlüssel AES-256-verschlüsselt in Tenant-DB, Schlüssel liegt in Env-Config (nicht in DB)
-- [ ] Tenant-DB-Drop entfernt alle personenbezogenen Daten (Art. 17-Umsetzung)
 - [ ] Audit-Logs pro Tenant nur in der jeweiligen Tenant-DB
-- [ ] Admin-E-Mail in Platform-DB nur für Abrechnungskommunikation
-- [ ] Stripe als Sub-Auftragsverarbeiter dokumentiert
-- [ ] 30-Tage-Retention wird automatisch ohne manuelle Aktion durchgesetzt
+
+**Art. 17 — Recht auf Löschung:**
+- [ ] Tenant-DB-Drop entfernt alle personenbezogenen Daten vollständig
+- [ ] 30-Tage-Retention läuft automatisch ohne manuelle Aktion
+- [ ] 7-Tage-Vorwarnung per E-Mail mit Löschdatum versendet
+- [ ] Löschprotokoll in `DeletionLog` mit anonymisierter E-Mail (Hash) gespeichert
+
+**Art. 20 — Datenportabilität:**
+- [ ] `/api/export/devices` liefert vollständigen JSON-Export aller Gerätedaten
+- [ ] Rate-Limit auf Export-Endpunkten aktiv
+
+**Art. 28 — Auftragsverarbeitung:**
+- [ ] AVV-Akzeptanz beim Checkout erzwungen (Server-seitige Pflichtprüfung)
+- [ ] `AvvAcceptedAt`, `AvvAcceptorIp`, `AvvVersion` in Platform-DB gespeichert
+- [ ] AVV-Nachweis im Admin-Panel unveränderlich sichtbar
+- [ ] Stripe als Sub-Auftragsverarbeiter in Datenschutz-Dokumentation gelistet
+- [ ] SMTP-Provider als Sub-Auftragsverarbeiter gelistet
+
+**Transparenz:**
+- [ ] Datenschutzerklärung auf Landing Page verlinkt
+- [ ] Impressum auf Landing Page vorhanden
+- [ ] AVV als PDF verlinkbar (statische Datei, versioniert)
+- [ ] Admin-E-Mail nur für Abrechnungs- und DSGVO-Kommunikation verwendet
+- [ ] Kein Cookie-Banner erforderlich (kein Tracking, nur Session-JWT)
 
 ---
 
