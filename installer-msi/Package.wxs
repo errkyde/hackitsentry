@@ -2,7 +2,7 @@
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
 
   <Product Id="*"
-           Name="HackIT Sentry Agent"
+           Name="HITSight Agent"
            Language="1033"
            Version="1.0.22"
            Manufacturer="HackIT"
@@ -10,7 +10,7 @@
 
     <Package InstallerVersion="200" Compressed="yes" InstallScope="perMachine" Platform="x64" />
 
-    <MajorUpgrade DowngradeErrorMessage="Eine neuere Version von HackIT Sentry Agent ist bereits installiert." />
+    <MajorUpgrade DowngradeErrorMessage="Eine neuere Version von HITSight Agent ist bereits installiert." />
     <MediaTemplate EmbedCab="yes" />
 
     <!-- Hide from Programs & Features / Add-Remove-Programs -->
@@ -22,21 +22,21 @@
 
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFiles64Folder">
-        <Directory Id="INSTALLFOLDER" Name="HackITSentry">
+        <Directory Id="INSTALLFOLDER" Name="HITSight">
           <Directory Id="AGENTFOLDER" Name="Agent">
 
             <Component Id="AgentExe" Guid="*" Win64="yes">
-              <File Id="AgentExeFile" Source="files/HackITSentry.Agent.exe" KeyPath="yes" />
+              <File Id="AgentExeFile" Source="files/HITSight.Agent.exe" KeyPath="yes" />
               <ServiceInstall Id="AgentService"
-                  Name="HackITSentryAgent"
-                  DisplayName="HackIT Sentry Agent"
-                  Description="HackIT Sentry Device Management Agent"
+                  Name="HITSightAgent"
+                  DisplayName="HITSight Agent"
+                  Description="HITSight Device Management Agent"
                   Type="ownProcess"
                   Start="auto"
                   ErrorControl="normal"
                   Interactive="no" />
               <ServiceControl Id="AgentServiceControl"
-                  Name="HackITSentryAgent"
+                  Name="HITSightAgent"
                   Start="install"
                   Stop="both"
                   Remove="uninstall"
@@ -51,7 +51,7 @@
 
           <!-- Registry: server URL and deploy key (read by agent on startup) -->
           <Component Id="RegistryConfig" Guid="*" Win64="yes">
-            <RegistryKey Root="HKLM" Key="SOFTWARE\HackIT Sentry" Action="createAndRemoveOnUninstall">
+            <RegistryKey Root="HKLM" Key="SOFTWARE\HITSight" Action="createAndRemoveOnUninstall">
               <RegistryValue Name="ServerUrl" Type="string" Value="[SERVERURL]" KeyPath="yes" />
               <RegistryValue Name="DeployKey" Type="string" Value="[DEPLOYKEY]" />
             </RegistryKey>

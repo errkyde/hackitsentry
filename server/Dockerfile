@@ -7,25 +7,25 @@ EXPOSE 5000
 # ── Build server ──────────────────────────────────────────────────────────
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
-COPY server/HITGuard.Server.csproj server/
+COPY server/HITSight.Server.csproj server/
 RUN --mount=type=cache,id=nuget-server,target=/root/.nuget/packages \
-    dotnet restore server/HITGuard.Server.csproj
+    dotnet restore server/HITSight.Server.csproj
 COPY server/ server/
 RUN --mount=type=cache,id=nuget-server,target=/root/.nuget/packages \
-    dotnet publish server/HITGuard.Server.csproj -c Release -o /app/publish /p:UseAppHost=false
+    dotnet publish server/HITSight.Server.csproj -c Release -o /app/publish /p:UseAppHost=false
 
 # ── Build agent (win-x64) ─────────────────────────────────────────────────
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS agent-build
 WORKDIR /src
-COPY agent/HITGuard.Agent.csproj agent/
+COPY agent/HITSight.Agent.csproj agent/
 RUN --mount=type=cache,id=nuget-agent,target=/root/.nuget/packages \
-    dotnet restore agent/HITGuard.Agent.csproj -r win-x64
+    dotnet restore agent/HITSight.Agent.csproj -r win-x64
 COPY agent/ agent/
 RUN --mount=type=cache,id=nuget-agent,target=/root/.nuget/packages \
-    dotnet publish agent/HITGuard.Agent.csproj \
+    dotnet publish agent/HITSight.Agent.csproj \
     -c Release -r win-x64 --self-contained true \
     -p:PublishSingleFile=true -o /agent-publish
-RUN grep -oP '(?<=<Version>)[^<]+' agent/HITGuard.Agent.csproj \
+RUN grep -oP '(?<=<Version>)[^<]+' agent/HITSight.Agent.csproj \
     | head -1 > /agent-publish/agent-version.txt \
     || echo "1.0.0" > /agent-publish/agent-version.txt
 
@@ -36,7 +36,7 @@ COPY installer/Installer.csproj installer/
 RUN --mount=type=cache,id=nuget-installer,target=/root/.nuget/packages \
     dotnet restore installer/Installer.csproj -r win-x64
 COPY installer/ installer/
-COPY --from=agent-build /agent-publish/HITGuard.Agent.exe installer/Resources/HITGuard.Agent.exe
+COPY --from=agent-build /agent-publish/HITSight.Agent.exe installer/Resources/HITSight.Agent.exe
 RUN --mount=type=cache,id=nuget-installer,target=/root/.nuget/packages \
     dotnet publish installer/Installer.csproj \
     -c Release -r win-x64 --self-contained true \
@@ -49,18 +49,18 @@ RUN --mount=type=cache,id=dnf-cache,target=/var/cache/dnf \
 WORKDIR /msi
 COPY installer-msi/Package.wxs .
 COPY installer-msi/files/appsettings.json ./files/appsettings.json
-COPY --from=agent-build /agent-publish/HITGuard.Agent.exe ./files/HITGuard.Agent.exe
+COPY --from=agent-build /agent-publish/HITSight.Agent.exe ./files/HITSight.Agent.exe
 COPY --from=agent-build /agent-publish/agent-version.txt ./agent-version.txt
 RUN VERSION=$(cat agent-version.txt) && \
     sed -i "s/Version=\"[0-9][0-9.]*\"/Version=\"$VERSION\"/" Package.wxs && \
-    mkdir -p /msi-publish && wixl -a x64 -o /msi-publish/HITGuard-Setup.msi Package.wxs
+    mkdir -p /msi-publish && wixl -a x64 -o /msi-publish/HITSight-Setup.msi Package.wxs
 
 # ── Final image ───────────────────────────────────────────────────────────
 FROM base AS final
 WORKDIR /app
 COPY --from=build /app/publish .
-COPY --from=installer-build /installer-publish/HITGuard-Setup.exe /app/installer/HITGuard-Setup.exe
-COPY --from=msi-build /msi-publish/HITGuard-Setup.msi /app/installer/HITGuard-Setup.msi
-COPY --from=agent-build /agent-publish/HITGuard.Agent.exe /app/agent/HITGuard.Agent.exe
+COPY --from=installer-build /installer-publish/HITSight-Setup.exe /app/installer/HITSight-Setup.exe
+COPY --from=msi-build /msi-publish/HITSight-Setup.msi /app/installer/HITSight-Setup.msi
+COPY --from=agent-build /agent-publish/HITSight.Agent.exe /app/agent/HITSight.Agent.exe
 COPY --from=agent-build /agent-publish/agent-version.txt /app/agent/agent-version.txt
-ENTRYPOINT ["dotnet", "HITGuard.Server.dll"]
+ENTRYPOINT ["dotnet", "HITSight.Server.dll"]
