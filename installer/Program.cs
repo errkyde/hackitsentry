@@ -3,6 +3,7 @@ using System.Reflection;
 using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Win32;
 
 // ── Placeholders – patched at download time by the server ─────────────────
 // Total length must stay constant (server patches by replacing bytes in-place)
@@ -57,14 +58,38 @@ Console.WriteLine();
 
 try
 {
-    // Remove current and all legacy service names so no duplicate services remain.
-    foreach (var svcName in new[] { ServiceName, "HITGuardAgent", "HackITSentryAgent", "SentryAgent" })
+    // Remove current and all legacy services — check by name AND by binary path via registry
+    // so we catch services regardless of what internal name the old installer used.
+    var knownNames = new[] { ServiceName, "HITGuardAgent", "HackITSentryAgent", "SentryAgent" };
+    var agentPathPatterns = new[] { @"\HITSight\Agent\", @"\HITGuard\Agent\", @"\HackITSentry\Agent\", @"HackITSentry.Agent.exe", @"HITGuard.Agent.exe", @"SentryAgent.exe" };
+
+    var servicesToRemove = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var n in knownNames) servicesToRemove.Add(n);
+
+    // Sweep registry for any service whose binary path looks like an old agent install
+    try
+    {
+        using var servicesKey = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Services");
+        if (servicesKey != null)
+        {
+            foreach (var svcName in servicesKey.GetSubKeyNames())
+            {
+                using var svcKey = servicesKey.OpenSubKey(svcName);
+                var imagePath = svcKey?.GetValue("ImagePath") as string ?? "";
+                if (agentPathPatterns.Any(p => imagePath.Contains(p, StringComparison.OrdinalIgnoreCase)))
+                    servicesToRemove.Add(svcName);
+            }
+        }
+    }
+    catch { /* registry read failed — fall back to known names only */ }
+
+    foreach (var svcName in servicesToRemove)
     {
         if (!ServiceExists(svcName)) continue;
         Console.Write($"  Dienst '{svcName}' entfernen...        ");
-        Run("sc", $"stop {svcName}");
+        Run("sc", $"stop \"{svcName}\"");
         WaitForServiceStopped(svcName, timeoutSeconds: 15);
-        Run("sc", $"delete {svcName}");
+        Run("sc", $"delete \"{svcName}\"");
         Thread.Sleep(500);
         Console.WriteLine("OK");
     }
@@ -143,7 +168,7 @@ static void WaitForServiceStopped(string name, int timeoutSeconds)
     var deadline = DateTime.UtcNow.AddSeconds(timeoutSeconds);
     while (DateTime.UtcNow < deadline)
     {
-        using var p = Process.Start(new ProcessStartInfo("sc", $"query {name}")
+        using var p = Process.Start(new ProcessStartInfo("sc", $"query \"{name}\"")
         {
             UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true
         })!;
@@ -157,7 +182,7 @@ static void WaitForServiceStopped(string name, int timeoutSeconds)
 
 static bool ServiceExists(string name)
 {
-    using var p = Process.Start(new ProcessStartInfo("sc", $"query {name}")
+    using var p = Process.Start(new ProcessStartInfo("sc", $"query \"{name}\"")
     {
         UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true
     })!;
